@@ -1,0 +1,3298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Peril Zone Calculator (Playground)</title>
+  <style>
+    :root { font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; background:#0f172a; color:#e2e8f0; }
+    .wrap { max-width: 820px; margin: 40px auto; padding: 24px; background:#111827; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35);}
+    h1,h2 { margin: 0 0 12px; }
+    p { line-height: 1.5; }
+    button { background:#22c55e; color:#0b1220; border:0; padding:10px 14px; border-radius:10px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#334155; color:#e2e8f0; }
+    input[type="number"]{ padding:8px; border-radius:8px; border:1px solid #334155; background:#0b1220; color:#e2e8f0; width:200px;}
+    label { display:block; margin:10px 0; }
+    .row { margin: 12px 0; }
+    .actions { display:flex; gap:10px; margin-top:16px;}
+    .small { font-size: .9rem; color:#94a3b8; }
+    pre { background:#0b1220; padding:12px; border-radius:12px; overflow:auto; }
+    .note { background:#0b1220; border-left:4px solid #22c55e; padding:10px 12px; border-radius:8px; }
+    .danger { background:#7f1d1d; color:#fee2e2; border:0; }
+    /* Back button area inside the cute card */
+    #nav { display:flex; gap:10px; margin: -4px 0 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="nav"></div>
+    <div id="app"></div>
+  </div>
+
+  <script>
+    // --- helpers (safe to keep) --------------------------------------------
+    function num(id) {
+      const v = Number(document.getElementById(id).value);
+      return isNaN(v) || v < 0 ? 0 : v;
+    }
+    function nextOnce(el, handler) {
+      el.addEventListener("click", handler, { once: true });
+    }
+    function resetApp() {
+      showDisclaimer();
+    }
+
+    // --- lightweight back stack (optional, used by wizard screens) ---------
+    const stepStack = [];
+    function pushStep(rerenderFn) { stepStack.push(rerenderFn); renderBack(); }
+    function goBack() {
+      if (stepStack.length <= 1) return;    // no back from first screen
+      stepStack.pop();                       // remove current
+      const prev = stepStack.at(-1);
+      if (prev) prev();                      // re-render previous
+      renderBack();
+    }
+    function renderBack() {
+      const nav = document.getElementById("nav");
+      nav.innerHTML = "";
+      if (stepStack.length > 1) {
+        const btn = document.createElement("button");
+        btn.textContent = "← Back";
+        btn.className = "secondary";
+        btn.onclick = goBack;
+        nav.appendChild(btn);
+      }
+    }
+
+    // --- entry --------------------------------------------------------------
+    const userInfo = {}; // extend later (family size, ages, etc.)
+    showDisclaimer();
+
+    function showDisclaimer() {
+      const app = document.getElementById("app");
+      document.getElementById("nav").innerHTML = ""; // no Back on disclaimer
+      app.innerHTML = `
+        <h1>Peril Zone Calculator</h1>
+        <div class="note small">
+          <strong>Disclaimer</strong><br>
+          I acknowledge that this tool is intended for entertainment purposes only and is not a definitive financial guide.
+          Any guidance from this tool is a brainstorming starting point and must be verified before making big life decisions.
+          Parameters and programs change frequently; many programs also have additional eligibility rules not covered here.
+          Please verify all details independently.
+          <br><br><em>Ohio-only for now.</em>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="agree"> I have read this information and agree.</label>
+        </div>
+        <div class="actions">
+          <button id="continue" class="primary">Continue</button>
+          <button id="reset" class="secondary">Reset</button>
+        </div>
+      `;
+      nextOnce(document.getElementById("continue"), () => {
+        const ok = document.getElementById("agree").checked;
+        if (!ok) { alert("Please check the agreement to continue."); return showDisclaimer(); }
+        // Start your wizard (defined in your separate script)
+        if (typeof startFamilyInfoStep === "function") {
+          startFamilyInfoStep(userInfo);
+        } else {
+          alert("startFamilyInfoStep() is not loaded yet.");
+        }
+      });
+      nextOnce(document.getElementById("reset"), resetApp);
+    }
+
+    // --- Family info pre-step ---------------------------------------------------
+    function startFamilyInfoStep(userInfo) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Family Setup</h2>
+        <label>Family size (people living in the household):
+          <input type="number" id="famSize" min="1" step="1">
+        </label>
+        <div class="row"></div>
+        <button id="famNext" class="primary">Next</button>
+      `;
+      pushStep(() => startFamilyInfoStep(userInfo));
+    
+      document.getElementById("famNext").addEventListener("click", () => {
+        const n = parseInt(document.getElementById("famSize").value, 10);
+        if (!Number.isInteger(n) || n < 1) { alert("Please enter a valid family size (at least 1)."); return; }
+        userInfo.familySize = n;
+        userInfo.members = [];
+        collectMemberInfo(userInfo, 0);
+      }, { once: true });
+    }
+    
+    function collectMemberInfo(userInfo, idx) {
+      const total = userInfo.familySize || 0;
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Member ${idx + 1} of ${total}</h2>
+        <div class="grid">
+          <label>Age (years): <input type="number" id="age" min="0" step="1"></label>
+          <label><input type="checkbox" id="pregnant"> Pregnant</label>
+        </div>
+        <div class="row"></div>
+        <button id="memberNext" class="primary">Next</button>
+      `;
+      pushStep(() => collectMemberInfo(userInfo, idx));
+    
+      document.getElementById("memberNext").addEventListener("click", () => {
+        const age = parseInt(document.getElementById("age").value, 10);
+        if (!Number.isInteger(age) || age < 0) { alert("Enter a valid non-negative age."); return; }
+        const pregnant = !!document.getElementById("pregnant").checked;
+        userInfo.members[idx] = { age, pregnant };
+    
+        if (idx + 1 < total) {
+          collectMemberInfo(userInfo, idx + 1);
+        } else {
+          askHouseholdDisability(userInfo);
+        }
+      }, { once: true });
+    }
+    
+    function askHouseholdDisability(userInfo) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Disability Status</h2>
+        <p>Is anyone in the household recognized by the state as having a disability?</p>
+        <button id="disYes" class="primary">Yes</button>
+        <button id="disNo">No</button>
+      `;
+      pushStep(() => askHouseholdDisability(userInfo));
+    
+      document.getElementById("disYes").addEventListener("click", () => {
+        userInfo.hasStateRecognizedDisability = true;
+        startBudgetWizard(userInfo);
+      }, { once: true });
+    
+      document.getElementById("disNo").addEventListener("click", () => {
+        userInfo.hasStateRecognizedDisability = false;
+        startBudgetWizard(userInfo);
+      }, { once: true });
+    }
+
+
+    // ========== Budget Wizard ==========
+    function startBudgetWizard(userInfo) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Budget Setup</h2>
+        <p>Would you like to enter your monthly budget manually or walk through each category?</p>
+        <button id="manual" class="primary">I already know my monthly minimum budget</button>
+        <button id="guided">Walk me through each category</button>
+      `;
+      // record this screen for Back
+      pushStep(() => startBudgetWizard(userInfo));
+
+      const budget = {};
+
+      document.getElementById("manual").addEventListener("click", () => {
+        renderManualBudget(userInfo, budget);
+      });
+
+      document.getElementById("guided").addEventListener("click", () => {
+        startHousingStep(userInfo, budget);
+      });
+    }
+
+    // Manual route
+    function renderManualBudget(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Manual Monthly Budget</h2>
+        <label>Enter your total minimum monthly survival-mode budget:
+          $<input type="number" id="manualBudget" min="0" step="0.01">
+        </label>
+        <div class="row"></div>
+        <button id="submitManualBudget" class="primary">Continue</button>
+      `;
+      pushStep(() => renderManualBudget(userInfo, budget));
+
+      document.getElementById("submitManualBudget").addEventListener("click", () => {
+        budget.totalMonthlyExpenses = Number(document.getElementById("manualBudget").value) || 0;
+        // Jump straight to summary (you can swap this to startBenefitsWizard later)
+        showBudgetSummary(userInfo, budget, /*cameFromManual*/true);
+      }, { once:true });
+    }
+
+    // Guided route
+    
+    // ========== Housing ==========
+    function startHousingStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Housing Costs</h2>
+        <p>Do you own or rent your home?</p>
+        <button id="own">Own</button>
+        <button id="rent">Rent</button>
+      `;
+      pushStep(() => startHousingStep(userInfo, budget));
+
+    document.getElementById("own").addEventListener("click", () => {
+      userInfo.ownsHome = true;   // set homeowner flag
+      askHousingAmount(true, userInfo, budget);
+    });
+    document.getElementById("rent").addEventListener("click", () => {
+      userInfo.ownsHome = false;  // set renter flag
+      askHousingAmount(false, userInfo, budget);
+    });
+    }
+    
+    function askHousingAmount(ownsHome, userInfo, budget) {
+      const app = document.getElementById("app");
+      const promptText = ownsHome
+        ? "How much do you pay each month in total for your mortgage, including taxes, insurance, and HOA fees?"
+        : "What is your total monthly rent including rental insurance or pet fees (but not utilities unless part of the rent)?";
+
+      app.innerHTML = `
+        <h2>Monthly Housing Cost</h2>
+        <p>${promptText}</p>
+        $<input type="number" id="housingCost" min="0" step="0.01" />
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => askHousingAmount(ownsHome, userInfo, budget));
+
+      document.getElementById("next").addEventListener("click", () => {
+        budget.monthlyHousing = Number(document.getElementById("housingCost").value) || 0;
+        startUtilitiesStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Utilities ==========
+    
+    function startUtilitiesStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Utilities</h2>
+        <div class="grid">
+          <label>Electricity: $<input type="number" id="elecCost" min="0" step="0.01"></label>
+          <label>Gas: $<input type="number" id="gasCost" min="0" step="0.01"></label>
+          <label>Water: $<input type="number" id="waterCost" min="0" step="0.01"></label>
+          <label>Trash/Sewer: $<input type="number" id="trashCost" min="0" step="0.01"></label>
+        </div>
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => startUtilitiesStep(userInfo, budget));
+
+      document.getElementById("next").addEventListener("click", () => {
+        const elec = Number(document.getElementById("elecCost").value) || 0;
+        const gas = Number(document.getElementById("gasCost").value) || 0;
+        const water = Number(document.getElementById("waterCost").value) || 0;
+        const trash = Number(document.getElementById("trashCost").value) || 0;
+        budget.utilityCost = elec + gas + water + trash;
+        startConnectivityStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Connectivity ==========
+    
+    function startConnectivityStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Phone & Internet</h2>
+        <div class="grid">
+          <label>Phone: $<input type="number" id="phoneCost" min="0" step="0.01"></label>
+          <label>Internet: $<input type="number" id="internetCost" min="0" step="0.01"></label>
+        </div>
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => startConnectivityStep(userInfo, budget));
+
+      document.getElementById("next").addEventListener("click", () => {
+        const phone = Number(document.getElementById("phoneCost").value) || 0;
+        const internet = Number(document.getElementById("internetCost").value) || 0;
+        budget.connectCost = phone + internet;
+        startTransportationStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Transportation ==========
+    
+    function startTransportationStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Transportation</h2>
+        <p>Do you have a car?</p>
+        <button id="hasCar">Yes</button>
+        <button id="noCar">No</button>
+      `;
+      pushStep(() => startTransportationStep(userInfo, budget));
+
+      document.getElementById("hasCar").addEventListener("click", () => {
+        askCarOwnership(userInfo, budget);
+      });
+      document.getElementById("noCar").addEventListener("click", () => {
+        askPublicTransport(userInfo, budget, false, 0);
+      });
+    }
+
+    function askCarOwnership(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Car Details</h2>
+        <p>Do you fully own your car (no monthly payments)?</p>
+        <button id="ownsCar">Yes</button>
+        <button id="leasesCar">No</button>
+      `;
+      pushStep(() => askCarOwnership(userInfo, budget));
+
+      document.getElementById("ownsCar").addEventListener("click", () => {
+        askCarCosts(userInfo, budget, 0);
+      });
+      document.getElementById("leasesCar").addEventListener("click", () => {
+        askCarPayment(userInfo, budget);
+      });
+    }
+
+    function askCarPayment(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Monthly Car Payment</h2>
+        <label>Amount: $<input type="number" id="carPayment" min="0" step="0.01"></label>
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => askCarPayment(userInfo, budget));
+
+      document.getElementById("next").addEventListener("click", () => {
+        const payment = Number(document.getElementById("carPayment").value) || 0;
+        askCarCosts(userInfo, budget, payment);
+      }, { once:true });
+    }
+
+    function askCarCosts(userInfo, budget, carPayment) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Car Costs</h2>
+        <div class="grid">
+          <label>Insurance: $<input type="number" id="carInsurance" min="0" step="0.01"></label>
+          <label>Gas (Monthly): $<input type="number" id="carGas" min="0" step="0.01"></label>
+          <label>Maintenance (Yearly): $<input type="number" id="carMaint" min="0" step="0.01"></label>
+        </div>
+        <div class="note small">
+            Note: Average car maintenance, repairs and registration for cars in Ohio tend to be between $350–$1500 per year, depending on the age and condition of the car.
+        </div>
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => askCarCosts(userInfo, budget, carPayment));
+
+      document.getElementById("next").addEventListener("click", () => {
+        const insurance = Number(document.getElementById("carInsurance").value) || 0;
+        const gas = Number(document.getElementById("carGas").value) || 0;
+        const maint = Number(document.getElementById("carMaint").value) || 0;
+        budget.totalTransCost = (budget.totalTransCost || 0);
+        budget.totalTransCost += carPayment + insurance + gas + (maint / 12);
+        askPublicTransport(userInfo, budget, true, 0);
+      }, { once:true });
+    }
+
+    function askPublicTransport(userInfo, budget, hasCar, alreadyAdded) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Other Transportation</h2>
+        <div class="grid">
+          <label>Bus Pass (Monthly): $<input type="number" id="busPass" min="0" step="0.01"></label>
+          <label>Rideshare (Monthly): $<input type="number" id="rideShare" min="0" step="0.01"></label>
+        </div>
+        <div class="row"></div>
+        <button id="next" class="primary">Next</button>
+      `;
+      pushStep(() => askPublicTransport(userInfo, budget, hasCar, alreadyAdded));
+
+      document.getElementById("next").addEventListener("click", () => {
+        const bus = Number(document.getElementById("busPass").value) || 0;
+        const ride = Number(document.getElementById("rideShare").value) || 0;
+        budget.totalTransCost = (budget.totalTransCost || 0) + bus + ride;
+        startFoodStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // --- Food cost estimation (bare-bones monthly) ---
+    const BASE_COSTS = {
+      baby:       111, // 0–1
+      toddler:    167, // 2–3
+      youngchild: 183, // 4–5
+      midchild:   203, // 6–8
+      oldchild:   200, // 9–11
+      tween:      217, // 12–13
+      teenUp:     300  // 14+
+    };
+    
+    function costByAge(ageYears) {
+      if (ageYears < 1) return BASE_COSTS.baby;
+      if (ageYears <= 3) return BASE_COSTS.toddler;
+      if (ageYears <= 5) return BASE_COSTS.youngchild;
+      if (ageYears <= 8) return BASE_COSTS.midchild;
+      if (ageYears <= 11) return BASE_COSTS.oldchild;
+      if (ageYears <= 13) return BASE_COSTS.tween;
+      return BASE_COSTS.teenUp;
+    }
+    
+    function estimateBareBonesFoodBudget(agesArray) {
+      return agesArray.reduce((sum, yrs) => sum + costByAge(yrs), 0);
+    }
+    
+    // ========== Food ==========
+    function startFoodStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Food Budget</h2>
+        <p>Enter monthly amount or let us estimate.</p>
+        <button id="foodManual">Enter Manually</button>
+        <button id="foodHelp">Help me estimate</button>
+      `;
+      pushStep(() => startFoodStep(userInfo, budget));
+    
+      // Manual entry path
+      document.getElementById("foodManual").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Monthly Food Budget</h2>
+          $<input type="number" id="foodCost" min="0" step="0.01">
+          <div class="row"></div>
+          <button id="next" class="primary">Next</button>
+        `;
+        // Revisit this exact screen when using Back
+    pushStep(() => document.getElementById("foodManual").click());
+    
+        document.getElementById("next").addEventListener("click", () => {
+          budget.totalFood = Number(document.getElementById("foodCost").value) || 0;
+          startHouseholdGoodsStep(userInfo, budget);
+        }, { once:true });
+      }, { once:true });
+    
+      // Helper/estimate path
+    document.getElementById("foodHelp").addEventListener("click", () => {
+      if (!userInfo.members || !userInfo.members.length) {
+        alert("Family info missing — please restart and enter family details.");
+        budget.totalFood = 0;
+        startHouseholdGoodsStep(userInfo, budget);
+        return;
+      }
+      renderFoodEstimateReview(userInfo, budget);
+    }, { once:true });
+
+    }
+
+    function renderFoodEstimateReview(userInfo, budget) {
+      const app = document.getElementById("app");
+    
+      // Build buckets matching your current costByAge bands
+      const buckets = [
+        { id: 'baby',       label: 'Baby (<1)',            per: BASE_COSTS.baby,       test: a => a < 1 },
+        { id: 'toddler',    label: 'Toddler (1–3)',        per: BASE_COSTS.toddler,    test: a => a >= 1 && a <= 3 },
+        { id: 'youngchild', label: 'Young child (4–5)',    per: BASE_COSTS.youngchild, test: a => a >= 4 && a <= 5 },
+        { id: 'midchild',   label: 'Child (6–8)',          per: BASE_COSTS.midchild,   test: a => a >= 6 && a <= 8 },
+        { id: 'oldchild',   label: 'Pre-teen (9–11)',      per: BASE_COSTS.oldchild,   test: a => a >= 9 && a <= 11 },
+        { id: 'tween',      label: 'Tween (12–13)',        per: BASE_COSTS.tween,      test: a => a >= 12 && a <= 13 },
+        { id: 'teenUp',     label: 'Teen/Adult (14+)',     per: BASE_COSTS.teenUp,     test: a => a >= 14 }
+      ];
+    
+      const members = Array.isArray(userInfo.members) ? userInfo.members : [];
+      const rows = buckets.map(b => ({ ...b, count: 0, subtotal: 0 }));
+    
+      for (const m of members) {
+        const age = Number(m.age) || 0;
+        const b = rows.find(r => r.test(age));
+        if (b) { b.count += 1; b.subtotal += b.per; }
+      }
+    
+      const shown = rows.filter(r => r.count > 0);
+      const estimated = shown.reduce((s, r) => s + r.subtotal, 0);
+    
+      app.innerHTML = `
+        <h2>Food Estimate — Review</h2>
+        <p>Here’s how we got your <strong>bare-bones monthly food estimate</strong> based on ages in your household.</p>
+    
+        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:6px;">Group</th>
+              <th style="text-align:right; padding:6px;">Count</th>
+              <th style="text-align:right; padding:6px;">$/person (mo)</th>
+              <th style="text-align:right; padding:6px;">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${shown.map(r => `
+              <tr>
+                <td style="padding:6px;">${r.label}</td>
+                <td style="padding:6px; text-align:right;">${r.count}</td>
+                <td style="padding:6px; text-align:right;">$${r.per.toFixed(0)}</td>
+                <td style="padding:6px; text-align:right;">$${r.subtotal.toFixed(0)}</td>
+              </tr>
+            `).join('')}
+            <tr>
+              <td colspan="3" style="padding:6px; text-align:right;"><strong>Total estimate</strong></td>
+              <td style="padding:6px; text-align:right;"><strong>$${estimated.toFixed(2)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Assumptions: “bare-bones” groceries (no dining out), age-based amounts, and no program offsets yet.
+          Pregnancy isn’t added here (WIC/other savings are considered later in the Benefits Wizard).
+        </div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="foodAccept" class="primary">This looks good</button>
+          <button id="foodOverride">Let me enter my own</button>
+        </div>
+      `;
+      pushStep(() => renderFoodEstimateReview(userInfo, budget));
+    
+      document.getElementById("foodAccept").addEventListener("click", () => {
+        budget.totalFood = Number(estimated.toFixed(2));
+        startHouseholdGoodsStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("foodOverride").addEventListener("click", () => {
+        renderFoodManual(userInfo, budget, estimated);
+      }, { once:true });
+    }
+    
+    function renderFoodManual(userInfo, budget, suggested) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Monthly Food Budget</h2>
+        <label>After reviewing, enter your own monthly estimate:
+          $<input type="number" id="foodCost" min="0" step="0.01" value="${(suggested || 0).toFixed(2)}">
+        </label>
+        <div class="row"></div>
+        <div class="actions">
+          <button id="foodManualNext" class="primary">Use this amount</button>
+          <button id="foodManualBack" class="secondary">Back</button>
+        </div>
+      `;
+      pushStep(() => renderFoodManual(userInfo, budget, suggested));
+    
+      document.getElementById("foodManualNext").addEventListener("click", () => {
+        const v = Number(document.getElementById("foodCost").value);
+        if (isNaN(v) || v < 0) { alert("Please enter a valid non-negative number."); return; }
+        budget.totalFood = v;
+        startHouseholdGoodsStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("foodManualBack").addEventListener("click", () => {
+        renderFoodEstimateReview(userInfo, budget);
+      }, { once:true });
+    }
+
+
+    // ========== Household ==========
+    function startHouseholdGoodsStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Household Items Budget</h2>
+        <p>Enter monthly amount or let us estimate.</p>
+        <button id="goodsManual">Enter Manually</button>
+        <button id="goodsHelp">Help me estimate</button>
+      `;
+      pushStep(() => startHouseholdGoodsStep(userInfo, budget));
+
+      document.getElementById("goodsManual").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Monthly Household Items</h2>
+          $<input type="number" id="goodsCost" min="0" step="0.01">
+          <div class="row"></div>
+          <button id="next" class="primary">Next</button>
+        `;
+        pushStep(() => document.getElementById("goodsManual").click());
+        document.getElementById("next").addEventListener("click", () => {
+          budget.totalGoods = Number(document.getElementById("goodsCost").value) || 0;
+          startChildcareStep(userInfo, budget);
+        }, { once:true });
+      });
+
+        document.getElementById("goodsHelp").addEventListener("click", () => {
+          if (!userInfo.members || !userInfo.members.length) {
+            alert("Family info missing — please restart and enter family details.");
+            budget.totalGoods = 0;
+            startChildcareStep(userInfo, budget);
+            return;
+          }
+          renderGoodsEstimateReview(userInfo, budget);
+        }, { once:true });
+    }
+
+    function renderGoodsEstimateReview(userInfo, budget) {
+      const app = document.getElementById("app");
+    
+      // Same factors you already use:
+      const baseCost = 90;
+      const adultFactor = 15;      // age >= 13
+      const childFactor = 10;      // 4–12
+      const babyFactor = 55;       // < 3 (diapers)
+      const pregnancyFactor = 55;  // per pregnant person
+    
+      const members = Array.isArray(userInfo.members) ? userInfo.members : [];
+    
+      let adults = 0, children = 0, babies = 0, pregnancies = 0;
+      for (const m of members) {
+        const age = Number(m.age) || 0;
+        if (age >= 13) adults += 1;
+        else if (age >= 4 && age <= 12) children += 1;
+        else if (age < 3) babies += 1;
+        if (m.pregnant) pregnancies += 1;
+      }
+    
+      const lineBase   = baseCost;
+      const lineAdults = adults * adultFactor;
+      const lineKids   = children * childFactor;
+      const lineBabies = babies * babyFactor;
+      const linePreg   = pregnancies * pregnancyFactor;
+    
+      const total = lineBase + lineAdults + lineKids + lineBabies + linePreg;
+    
+      app.innerHTML = `
+        <h2>Household Items — Review</h2>
+        <p>Here’s how we built your <strong>bare-bones monthly household items estimate</strong>
+           (cleaners, paper goods, diapers, basic hygiene, etc.).</p>
+    
+        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:6px;">Component</th>
+              <th style="text-align:right; padding:6px;">Qty</th>
+              <th style="text-align:right; padding:6px;">$/unit (mo)</th>
+              <th style="text-align:right; padding:6px;">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:6px;">Base household starter</td>
+              <td style="padding:6px; text-align:right;">—</td>
+              <td style="padding:6px; text-align:right;">$${baseCost.toFixed(0)}</td>
+              <td style="padding:6px; text-align:right;">$${lineBase.toFixed(0)}</td>
+            </tr>
+            ${adults ? `
+              <tr>
+                <td style="padding:6px;">Adults/teens (13+)</td>
+                <td style="padding:6px; text-align:right;">${adults}</td>
+                <td style="padding:6px; text-align:right;">$${adultFactor.toFixed(0)}</td>
+                <td style="padding:6px; text-align:right;">$${lineAdults.toFixed(0)}</td>
+              </tr>` : '' }
+            ${children ? `
+              <tr>
+                <td style="padding:6px;">Children (4–12)</td>
+                <td style="padding:6px; text-align:right;">${children}</td>
+                <td style="padding:6px; text-align:right;">$${childFactor.toFixed(0)}</td>
+                <td style="padding:6px; text-align:right;">$${lineKids.toFixed(0)}</td>
+              </tr>` : '' }
+            ${babies ? `
+              <tr>
+                <td style="padding:6px;">Babies/toddlers in diapers (<3)</td>
+                <td style="padding:6px; text-align:right;">${babies}</td>
+                <td style="padding:6px; text-align:right;">$${babyFactor.toFixed(0)}</td>
+                <td style="padding:6px; text-align:right;">$${lineBabies.toFixed(0)}</td>
+              </tr>` : '' }
+            ${pregnancies ? `
+              <tr>
+                <td style="padding:6px;">Pregnancy adjustment</td>
+                <td style="padding:6px; text-align:right;">${pregnancies}</td>
+                <td style="padding:6px; text-align:right;">$${pregnancyFactor.toFixed(0)}</td>
+                <td style="padding:6px; text-align:right;">$${linePreg.toFixed(0)}</td>
+              </tr>` : '' }
+            <tr>
+              <td colspan="3" style="padding:6px; text-align:right;"><strong>Total estimate</strong></td>
+              <td style="padding:6px; text-align:right;"><strong>$${total.toFixed(2)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Assumptions: basic, no-frills supplies; diapers counted for <3; pregnancy bump covers vitamins and added hygiene items.
+          You can accept this estimate or enter your own after considering it.
+        </div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="goodsAccept" class="primary">This looks good</button>
+          <button id="goodsOverride">Let me enter my own</button>
+        </div>
+      `;
+      pushStep(() => renderGoodsEstimateReview(userInfo, budget));
+    
+      document.getElementById("goodsAccept").addEventListener("click", () => {
+        budget.totalGoods = Number(total.toFixed(2));
+        startChildcareStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("goodsOverride").addEventListener("click", () => {
+        renderGoodsManual(userInfo, budget, total);
+      }, { once:true });
+    }
+    
+    function renderGoodsManual(userInfo, budget, suggested) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Monthly Household Items</h2>
+        <label>After reviewing, enter your own monthly estimate:
+          $<input type="number" id="goodsCost" min="0" step="0.01" value="${(suggested || 0).toFixed(2)}">
+        </label>
+        <div class="row"></div>
+        <div class="actions">
+          <button id="goodsManualNext" class="primary">Use this amount</button>
+          <button id="goodsManualBack" class="secondary">Back</button>
+        </div>
+      `;
+      pushStep(() => renderGoodsManual(userInfo, budget, suggested));
+    
+      document.getElementById("goodsManualNext").addEventListener("click", () => {
+        const v = Number(document.getElementById("goodsCost").value);
+        if (isNaN(v) || v < 0) { alert("Please enter a valid non-negative number."); return; }
+        budget.totalGoods = v;
+        startChildcareStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("goodsManualBack").addEventListener("click", () => {
+        renderGoodsEstimateReview(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Childcare ==========
+    function startChildcareStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Childcare Costs</h2>
+        <p>Do you currently have or are you willing to apply for childcare assistance?</p>
+        <button id="ccYes" class="primary">Yes</button>
+        <button id="ccNo">No</button>
+      `;
+      // allow Back to return to this question
+      pushStep(() => startChildcareStep(userInfo, budget));
+    
+      // YES → $0 now; Benefits Wizard will decide later
+      document.getElementById("ccYes").addEventListener("click", () => {
+        budget.usingChildcareSubsidy = true;
+        budget.childcareCost = 0;
+        alert("Childcare cost will be assessed in the Benefits Wizard.");
+        startTuitionStep(userInfo, budget);
+      }, { once: true });
+    
+      // NO → ask for monthly out-of-pocket
+      document.getElementById("ccNo").addEventListener("click", () => {
+        budget.usingChildcareSubsidy = false;
+        app.innerHTML = `
+          <h2>Childcare Costs</h2>
+          <label>Total monthly childcare cost:
+            $<input type="number" id="childcareMonthly" min="0" step="0.01">
+          </label>
+          <div class="row"></div>
+          <button id="ccNext" class="primary">Next</button>
+        `;
+        // Back from this screen should return here
+        pushStep(() => document.getElementById("ccNo").click());
+    
+        document.getElementById("ccNext").addEventListener("click", () => {
+          const val = Number(document.getElementById("childcareMonthly").value);
+          if (isNaN(val) || val < 0) { alert("Please enter a valid non-negative number."); return; }
+          budget.childcareCost = val;
+          askChildTuition(userInfo, budget);
+        }, { once: true });
+      }, { once: true });
+    }
+
+    // ========== Tuition wrapper (adult first, then child) ==========
+    function startTuitionStep(userInfo, budget) {
+      askAdultTuition(userInfo, budget);
+    }
+    
+    // Ask if any adult pays out-of-pocket tuition, then go to child tuition
+    function askAdultTuition(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Adult Tuition</h2>
+        <p>Do you (or another adult in your household) currently pay any <strong>out-of-pocket tuition</strong> for college or training?</p>
+        <button id="adultTuitionYes" class="primary">Yes</button>
+        <button id="adultTuitionNo">No</button>
+      `;
+      pushStep(() => askAdultTuition(userInfo, budget));
+    
+      // YES → collect yearly, store monthly, then move on to child tuition
+      document.getElementById("adultTuitionYes").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Adult Tuition — Yearly</h2>
+          <label>$<input type="number" id="adultTuitionYear" min="0" step="0.01"></label>
+          <div class="row"></div>
+          <button id="adultTuitionNext" class="primary">Next</button>
+        `;
+        pushStep(() => document.getElementById("adultTuitionYes").click());
+    
+        document.getElementById("adultTuitionNext").addEventListener("click", () => {
+          const y = Number(document.getElementById("adultTuitionYear").value) || 0;
+          budget.adultTuition = y / 12;       // store monthly
+          startTuitionStep(userInfo, budget);  // continue
+        }, { once:true });
+      }, { once:true });
+    
+      // NO → set to 0 and continue
+      document.getElementById("adultTuitionNo").addEventListener("click", () => {
+        budget.adultTuition = 0;
+        askChildTuition(userInfo, budget);
+      }, { once:true });
+    }
+
+
+    // ========== Child Tuition ==========
+    function askChildTuition(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Child Tuition</h2>
+        <p>Do any of your children attend a school that <strong>charges tuition</strong>?</p>
+        <button id="childTuitionYes" class="primary">Yes</button>
+        <button id="childTuitionNo">No</button>
+      `;
+      pushStep(() => askChildTuition(userInfo, budget));
+    
+      // If school(s) charge tuition, ask about EdChoice next
+      document.getElementById("childTuitionYes").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>EdChoice Scholarship</h2>
+          <p>Will you be applying for the <strong>EdChoice</strong> scholarship?</p>
+          <button id="edYes" class="primary">Yes</button>
+          <button id="edNo">No</button>
+        `;
+        pushStep(() => document.getElementById("childTuitionYes").click());
+    
+        // Applying for EdChoice → tuition handled later by benefits wizard
+        document.getElementById("edYes").addEventListener("click", () => {
+          budget.usingEdChoice = true;
+          budget.kidsTuition = 0; // monthly; benefits wizard will calculate
+          askChildSchoolFees(userInfo, budget);
+        }, { once: true });
+    
+        // Not applying → collect yearly tuition now
+        document.getElementById("edNo").addEventListener("click", () => {
+          budget.usingEdChoice = false;
+          app.innerHTML = `
+            <h2>Total Yearly Tuition (All Children)</h2>
+            <label>$<input type="number" id="kidsTuitionYear" min="0" step="0.01"></label>
+            <div class="row"></div>
+            <button id="nextTuition" class="primary">Next</button>
+          `;
+          pushStep(() => document.getElementById("edNo").click());
+    
+          document.getElementById("nextTuition").addEventListener("click", () => {
+            const y = Number(document.getElementById("kidsTuitionYear").value) || 0;
+            budget.kidsTuition = y / 12; // store monthly
+            askChildSchoolFees(userInfo, budget);
+          }, { once: true });
+        }, { once: true });
+      }, { once: true });
+    
+      // No tuition at children’s schools
+      document.getElementById("childTuitionNo").addEventListener("click", () => {
+        budget.usingEdChoice = false;
+        budget.kidsTuition = 0;
+        budget.kidsFees = 0;
+        budget.totalTuition = (budget.adultTuition || 0);
+        startClothingStep(userInfo, budget);
+      }, { once: true });
+    }
+    
+    // After tuition decision, always ask for fees/supplies not covered
+    function askChildSchoolFees(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>School Fees & Supplies</h2>
+        <p>Enter the <strong>total yearly</strong> cost not covered by scholarships or grants
+           (fees, supplies, tech, labs, activities, etc.).</p>
+        $<input type="number" id="kidsFeesYear" min="0" step="0.01">
+        <div class="row"></div>
+        <button id="feesNext" class="primary">Next</button>
+      `;
+      pushStep(() => askChildSchoolFees(userInfo, budget));
+    
+      document.getElementById("feesNext").addEventListener("click", () => {
+        const fy = Number(document.getElementById("kidsFeesYear").value) || 0;
+        budget.kidsFees = fy / 12; // monthly
+        budget.totalTuition = (budget.adultTuition || 0) + (budget.kidsTuition || 0) + (budget.kidsFees || 0);
+        startClothingStep(userInfo, budget);
+      }, { once: true });
+    }
+
+    // --- Clothing: average monthly estimator (secondhand + new underwear/shoes) ---
+    const AVG_CLOTHING = {
+      baby: 225,   // 0–3
+      child: 175,  // 4–12
+      teen:  250,  // 13–18
+      adult: 200   // 19+
+    };
+    
+    function clothingBand(age){
+      if (age <= 3) return 'baby';
+      if (age <= 12) return 'child';
+      if (age <= 18) return 'teen';
+      return 'adult';
+    }
+    
+    function estimateClothingMonthly(members){
+      let annual = 0;
+      for (const m of (members || [])) {
+        const age = Number(m.age) || 0;
+        annual += AVG_CLOTHING[clothingBand(age)];
+      }
+      return Number((annual / 12).toFixed(2));
+    }
+
+    // ========== Clothing ==========
+    
+    function startClothingStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Clothing Needs</h2>
+        <p>Enter yearly essentials or let us estimate.</p>
+        <button id="manualClothing">Enter Manually</button>
+        <button id="estimateClothing">Estimate</button>
+      `;
+      pushStep(() => startClothingStep(userInfo, budget));
+
+      document.getElementById("manualClothing").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Yearly Clothing Costs</h2>
+          <label>Estimated yearly cost: $<input type="number" id="yearlyClothes" min="0" step="0.01"></label>
+          <div class="row"></div>
+          <button id="next" class="primary">Next</button>
+        `;
+        pushStep(() => document.getElementById("manualClothing").click());
+        document.getElementById("next").addEventListener("click", () => {
+          const yearly = Number(document.getElementById("yearlyClothes").value) || 0;
+          budget.totalClothes = yearly / 12;
+          startStudentLoanStep(userInfo, budget);
+        }, { once:true });
+      });
+      
+        document.getElementById("estimateClothing").addEventListener("click", () => {
+          if (!userInfo.members || !userInfo.members.length) {
+            alert("Family info missing — please restart and enter family details.");
+            budget.totalClothes = 0;
+            startStudentLoanStep(userInfo, budget);
+            return;
+          }
+          renderClothingEstimateReview(userInfo, budget);
+        }, { once:true });
+    }
+
+    function renderClothingEstimateReview(userInfo, budget){
+      const app = document.getElementById("app");
+      const members = Array.isArray(userInfo.members) ? userInfo.members : [];
+    
+      // Count people in each age band (uses your existing clothingBand + AVG_CLOTHING)
+      const counts = { baby:0, child:0, teen:0, adult:0 };
+      for (const m of members) {
+        const age = Number(m.age) || 0;
+        counts[clothingBand(age)] += 1;
+      }
+    
+      const sub = {
+        baby:  counts.baby  * AVG_CLOTHING.baby,
+        child: counts.child * AVG_CLOTHING.child,
+        teen:  counts.teen  * AVG_CLOTHING.teen,
+        adult: counts.adult * AVG_CLOTHING.adult
+      };
+      const totalAnnual  = sub.baby + sub.child + sub.teen + sub.adult;
+      const totalMonthly = totalAnnual / 12;
+    
+      function row(label, qty, perYear, subtotal){
+        if (!qty) return "";
+        return `
+          <tr>
+            <td style="padding:6px;">${label}</td>
+            <td style="padding:6px; text-align:right;">${qty}</td>
+            <td style="padding:6px; text-align:right;">$${perYear.toFixed(0)}</td>
+            <td style="padding:6px; text-align:right;">$${subtotal.toFixed(0)}</td>
+          </tr>`;
+      }
+    
+      app.innerHTML = `
+        <h2>Clothing — Review</h2>
+        <p>Here’s how we built your <strong>bare-bones annual clothing estimate</strong>
+           (mostly secondhand, new underwear & off-brand shoes).</p>
+    
+        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:6px;">Group</th>
+              <th style="text-align:right; padding:6px;">Qty</th>
+              <th style="text-align:right; padding:6px;">$/person (yr)</th>
+              <th style="text-align:right; padding:6px;">Subtotal (yr)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${row("Babies (0–3)", counts.baby,  AVG_CLOTHING.baby,  sub.baby)}
+            ${row("Children (4–12)", counts.child, AVG_CLOTHING.child, sub.child)}
+            ${row("Teens (13–18)", counts.teen,  AVG_CLOTHING.teen,  sub.teen)}
+            ${row("Adults (19+)", counts.adult, AVG_CLOTHING.adult, sub.adult)}
+            <tr>
+              <td colspan="3" style="padding:6px; text-align:right;"><strong>Total (annual)</strong></td>
+              <td style="padding:6px; text-align:right;"><strong>$${totalAnnual.toFixed(2)}</strong></td>
+            </tr>
+            <tr>
+              <td colspan="3" style="padding:6px; text-align:right;">= Monthly</td>
+              <td style="padding:6px; text-align:right;"><strong>$${totalMonthly.toFixed(2)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Assumptions: “survival-mode” wardrobe refresh each year; heavy use of secondhand;
+          per-person averages vary by age band.
+        </div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="clothesAccept" class="primary">This looks good</button>
+          <button id="clothesOverride">Let me enter my own</button>
+        </div>
+      `;
+      pushStep(() => renderClothingEstimateReview(userInfo, budget));
+    
+      document.getElementById("clothesAccept").addEventListener("click", () => {
+        budget.totalClothes = Number((totalAnnual / 12).toFixed(2));
+        startStudentLoanStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("clothesOverride").addEventListener("click", () => {
+        renderClothingManual(userInfo, budget, totalAnnual);
+      }, { once:true });
+    }
+    
+    function renderClothingManual(userInfo, budget, suggestedAnnual){
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Yearly Clothing Costs</h2>
+        <label>After reviewing, enter your own yearly estimate:
+          $<input type="number" id="yearlyClothes" min="0" step="0.01" value="${(suggestedAnnual || 0).toFixed(2)}">
+        </label>
+        <div class="row"></div>
+        <div class="actions">
+          <button id="clothesManualNext" class="primary">Use this amount</button>
+          <button id="clothesManualBack" class="secondary">Back</button>
+        </div>
+      `;
+      pushStep(() => renderClothingManual(userInfo, budget, suggestedAnnual));
+    
+      document.getElementById("clothesManualNext").addEventListener("click", () => {
+        const yearly = Number(document.getElementById("yearlyClothes").value);
+        if (isNaN(yearly) || yearly < 0) { alert("Please enter a valid non-negative number."); return; }
+        budget.totalClothes = yearly / 12;
+        startStudentLoanStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("clothesManualBack").addEventListener("click", () => {
+        renderClothingEstimateReview(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Student Loan ==========
+    
+    function startStudentLoanStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Student Loans</h2>
+        <p>Do you have student loans?</p>
+        <button id="yesLoans">Yes</button>
+        <button id="noLoans">No</button>
+      `;
+      pushStep(() => startStudentLoanStep(userInfo, budget));
+    
+      // YES: ask about plan type
+      document.getElementById("yesLoans").addEventListener("click", () => {
+        budget.studentLoans = true;
+        app.innerHTML = `
+          <h2>Repayment Plan</h2>
+          <p>Are you on an <strong>ICR</strong> plan (or planning to apply)?</p>
+          <button id="yesICR" class="primary">Yes (ICR)</button>
+          <button id="noICR">No (Standard)</button>
+        `;
+        pushStep(() => document.getElementById("yesLoans").click());
+    
+        // ICR path: collect total balance; monthly set to $0 for now
+        document.getElementById("yesICR").addEventListener("click", () => {
+          app.innerHTML = `
+            <h2>ICR / Income-Driven</h2>
+            <p>Please enter your <strong>total loan balance</strong> (for reference).</p>
+            <label>Total owed: $<input type="number" id="totalLoanDebt" min="0" step="0.01"></label>
+            <div class="row"></div>
+            <button id="nextICR" class="primary">Next</button>
+          `;
+          pushStep(() => document.getElementById("yesICR").click());
+    
+          document.getElementById("nextICR").addEventListener("click", () => {
+            const total = Number(document.getElementById("totalLoanDebt").value);
+            if (isNaN(total) || total < 0) { alert("Please enter a valid non-negative number."); return; }
+    
+            budget.usingICR = true;
+            budget.totalLoanDebt = total;   // keep for benefits wizard
+            budget.monthlySetPayment = 0;   // calculated later
+            alert("Monthly amount will be calculated in the benefits wizard.");
+            startOtherDebtStep(userInfo, budget);
+          }, { once:true });
+        }, { once:true });
+    
+        // Standard plan: collect monthly amount AND total balance
+        document.getElementById("noICR").addEventListener("click", () => {
+          app.innerHTML = `
+            <h2>Standard Plan</h2>
+            <label>Monthly payment: $<input type="number" id="monthlySetPayment" min="0" step="0.01"></label>
+            <br><br>
+            <label>Total owed: $<input type="number" id="totalLoanDebt" min="0" step="0.01"></label>
+            <div class="row"></div>
+            <button id="nextStd" class="primary">Next</button>
+          `;
+          pushStep(() => document.getElementById("noICR").click());
+    
+          document.getElementById("nextStd").addEventListener("click", () => {
+            const monthly = Number(document.getElementById("monthlySetPayment").value);
+            const total = Number(document.getElementById("totalLoanDebt").value);
+            if (isNaN(monthly) || monthly < 0 || isNaN(total) || total < 0) {
+              alert("Please enter valid non-negative numbers.");
+              return;
+            }
+    
+            budget.usingICR = false;
+            budget.monthlySetPayment = monthly; // count in budget now
+            budget.totalLoanDebt = total;       // keep for later modelling
+            startOtherDebtStep(userInfo, budget);
+          }, { once:true });
+        }, { once:true });
+      }, { once:true });
+    
+      // NO loans
+      document.getElementById("noLoans").addEventListener("click", () => {
+        budget.studentLoans = false;
+        budget.usingICR = false;
+        budget.monthlySetPayment = 0;
+        budget.totalLoanDebt = 0;
+        startOtherDebtStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    
+    // ========== Other Debt ==========
+
+    function startOtherDebtStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Other Debt Repayments</h2>
+        <p>Do you have any fixed monthly debt repayments?</p>
+        <button id="yesOtherDebt">Yes</button>
+        <button id="noOtherDebt">No</button>
+      `;
+      pushStep(() => startOtherDebtStep(userInfo, budget));
+
+      document.getElementById("yesOtherDebt").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Monthly Debt Payment</h2>
+          <label>Amount: $<input type="number" id="monthlyDebtPayment" min="0" step="0.01"></label>
+          <div class="row"></div>
+          <button id="next" class="primary">Next</button>
+        `;
+        pushStep(() => document.getElementById("yesOtherDebt").click());
+        document.getElementById("next").addEventListener("click", () => {
+          const val = Number(document.getElementById("monthlyDebtPayment").value);
+          if (isNaN(val) || val < 0) { alert("Please enter a valid non-negative number."); return; }
+          budget.otherDebt = true;
+          budget.monthlyDebtPayment = val;
+          startHealthcareStep(userInfo, budget);
+        }, { once:true });
+      });
+
+      document.getElementById("noOtherDebt").addEventListener("click", () => {
+        budget.otherDebt = false;
+        budget.monthlyDebtPayment = 0;
+        startHealthcareStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Healthcare ==========
+    
+    function startHealthcareStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Healthcare Costs</h2>
+        <p>Do you have private (job-sponsored or other) health insurance?</p>
+        <button id="yesHealthIns">Yes</button>
+        <button id="noHealthIns">No</button>
+      `;
+      pushStep(() => startHealthcareStep(userInfo, budget));
+    
+      // User DOES have private insurance
+      document.getElementById("yesHealthIns").addEventListener("click", () => {
+        // Ask Medicaid willingness first
+        app.innerHTML = `
+          <h2>Medicaid Option</h2>
+          <p>Would you be willing to apply for Medicaid if eligible?</p>
+          <button id="medWillingYes" class="primary">Yes</button>
+          <button id="medWillingNo">No</button>
+        `;
+        pushStep(() => document.getElementById("yesHealthIns").click());
+    
+        // Willing to apply: zero out; benefits wizard will calculate later
+        document.getElementById("medWillingYes").addEventListener("click", () => {
+          budget.healthIns = true;
+          budget.medicaidWilling = true;
+          budget.insPremium = 0;
+          budget.yearlyMedCosts = 0;
+          budget.totalHealthcare = 0;
+          alert("Insurance premium and medical costs will be calculated in the benefits wizard.");
+          startRepairsStep(userInfo, budget);
+        }, { once:true });
+    
+        // Not willing: collect premium + yearly OOP now and include in budget
+        document.getElementById("medWillingNo").addEventListener("click", () => {
+          budget.medicaidWilling = false;
+          app.innerHTML = `
+            <h2>Insurance and Medical Costs</h2>
+            <label>Monthly premium: $<input type="number" id="insPremium" min="0" step="0.01"></label><br><br>
+            <label>Yearly out-of-pocket costs: $<input type="number" id="yearlyMedCosts" min="0" step="0.01"></label><br><br>
+            <button id="nextHealth" class="primary">Next</button>
+          `;
+          pushStep(() => document.getElementById("medWillingNo").click());
+    
+          document.getElementById("nextHealth").addEventListener("click", () => {
+            const insPremium = Number(document.getElementById("insPremium").value);
+            const yearlyMedCosts = Number(document.getElementById("yearlyMedCosts").value);
+            if (isNaN(insPremium) || insPremium < 0 || isNaN(yearlyMedCosts) || yearlyMedCosts < 0) {
+              alert("Please enter valid non-negative numbers.");
+              return;
+            }
+            budget.healthIns = true;
+            budget.insPremium = insPremium;
+            budget.yearlyMedCosts = yearlyMedCosts;
+            budget.totalHealthcare = insPremium + (yearlyMedCosts / 12);
+            startRepairsStep(userInfo, budget);
+          }, { once:true });
+        }, { once:true });
+      }, { once:true });
+    
+      // User does NOT have private insurance
+      document.getElementById("noHealthIns").addEventListener("click", () => {
+        budget.healthIns = false;
+        budget.medicaidWilling = true; // assume we'll check eligibility in benefits wizard
+        budget.insPremium = 0;
+        budget.yearlyMedCosts = 0;
+        budget.totalHealthcare = 0;
+        // (Benefits wizard will decide if Medicaid applies; costs stay 0 here)
+        startRepairsStep(userInfo, budget);
+      }, { once:true });
+    }
+
+    // ========== Home Repair ==========
+    function startRepairsStep(userInfo, budget) {
+      // Skip this section entirely for renters
+      if (userInfo.ownsHome !== true) {
+        budget.yearlyRepairs = 0;
+        budget.monthlyRepairs = 0;
+        return startPetCostsStep(userInfo, budget);
+      }
+    
+      const app = document.getElementById("app");
+    
+      // --- Ohio-average % of home value per year (maintenance + repairs) ---
+      const OHIO_REPAIR_PCT = {
+        lt10:   0.010, // <10 yrs  ≈ 1.0%
+        y10_19: 0.014, // 10–19    ≈ 1.4%
+        y20_39: 0.020, // 20–39    ≈ 2.0%
+        y40_69: 0.025, // 40–69    ≈ 2.5%
+        gte70:  0.030  // 70+      ≈ 3.0%
+      };
+    
+      function bandFromAge(age){
+        if (age < 10)  return 'lt10';
+        if (age <= 19) return 'y10_19';
+        if (age <= 39) return 'y20_39';
+        if (age <= 69) return 'y40_69';
+        return 'gte70';
+      }
+    
+      function calcAnnualHomeRepairsOhio({ value, ageYears }){
+        const band = bandFromAge(ageYears);
+        const pct  = OHIO_REPAIR_PCT[band];
+        const annual  = value * pct;
+        const monthly = annual / 12;
+        return {
+          band,
+          pct: Number(pct.toFixed(4)),
+          annual: Number(annual.toFixed(2)),
+          monthly: Number(monthly.toFixed(2))
+        };
+      }
+    
+      // Main screen (manual entry + helper)
+      function renderMain() {
+        app.innerHTML = `
+          <h2>Household Repairs</h2>
+          <p>Enter your <strong>yearly</strong> home repairs & maintenance amount (non-medical/auto/pet), or let us estimate using the Ohio 1–3% rule.</p>
+          <label>Yearly repairs & maintenance: $<input type="number" id="yearlyRepairs" min="0" step="0.01"></label>
+          <div class="row"></div>
+          <div class="actions">
+            <button id="repairsNext" class="primary">Next</button>
+            <button id="repairsEstimate" class="secondary">Help me estimate</button>
+          </div>
+        `;
+        pushStep(() => renderMain());
+        appendRepairsNote();
+    
+        document.getElementById("repairsNext").addEventListener("click", () => {
+          const valStr = document.getElementById("yearlyRepairs").value.trim();
+          const valNum = Number(valStr);
+          if (valStr === "" || isNaN(valNum) || valNum < 0) {
+            alert("Please enter a valid non-negative number.");
+            return;
+          }
+          budget.yearlyRepairs = valNum;
+          budget.monthlyRepairs = valNum / 12;
+          startPetCostsStep(userInfo, budget);
+        }, { once:true });
+    
+        document.getElementById("repairsEstimate").addEventListener("click", () => {
+          renderEstimator();
+        }, { once:true });
+      }
+    
+      // Helper screen (estimate using value + age)
+      function renderEstimator() {
+        app.innerHTML = `
+          <h2>Estimate Home Repairs (Ohio)</h2>
+          <div class="grid">
+            <label>Home market value: $<input type="number" id="homeValue" min="0" step="0.01"></label>
+            <label>Home age (years): <input type="number" id="homeAge" min="0" step="1"></label>
+          </div>
+          <div class="row"></div>
+          <div class="actions">
+            <button id="useEstimate" class="primary">Use Estimate</button>
+            <button id="cancelEstimate" class="secondary">Back</button>
+          </div>
+        `;
+        pushStep(() => renderEstimator());
+        appendRepairsNote();
+    
+        document.getElementById("useEstimate").addEventListener("click", () => {
+          const value = Number(document.getElementById("homeValue").value);
+          const ageYears = Number(document.getElementById("homeAge").value);
+          if (isNaN(value) || value < 0 || isNaN(ageYears) || ageYears < 0) {
+            alert("Please enter valid non-negative numbers.");
+            return;
+          }
+          const result = calcAnnualHomeRepairsOhio({ value, ageYears });
+          renderRepairsEstimateReview(userInfo, budget, { value, ageYears, ...result });
+        }, { once:true });
+      }
+    
+    function renderRepairsEstimateReview(userInfo, budget, data){
+      const app = document.getElementById("app");
+      const { value, ageYears, band, pct, annual, monthly } = data;
+    
+      const bandLabels = {
+        lt10: "< 10 years",
+        y10_19: "10–19 years",
+        y20_39: "20–39 years",
+        y40_69: "40–69 years",
+        gte70: "70+ years"
+      };
+    
+      app.innerHTML = `
+        <h2>Home Repairs — Review</h2>
+        <p>We used the Ohio 1–3% rule and adjusted by home age.</p>
+    
+        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+          <tbody>
+            <tr>
+              <td style="padding:6px;">Home market value</td>
+              <td style="padding:6px; text-align:right;">$${value.toLocaleString()}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Home age</td>
+              <td style="padding:6px; text-align:right;">${ageYears} years</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Age band</td>
+              <td style="padding:6px; text-align:right;">${bandLabels[band] || band}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Percent applied</td>
+              <td style="padding:6px; text-align:right;">${(pct * 100).toFixed(2)}%</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Calculation</td>
+              <td style="padding:6px; text-align:right;">$${value.toLocaleString()} × ${(pct*100).toFixed(2)}% = $${annual.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;"><strong>Total (annual)</strong></td>
+              <td style="padding:6px; text-align:right;"><strong>$${annual.toFixed(2)}</strong></td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">= Monthly average</td>
+              <td style="padding:6px; text-align:right;"><strong>$${monthly.toFixed(2)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+    
+        <div class="row"></div>
+        <div class="note small">
+          This “1–3% of value” rule is an average over time; real costs arrive in spikes (roof/HVAC, etc.).
+          Use your own number if you maintain reserves differently or your home has unusual needs.
+        </div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="repairsAccept" class="primary">This looks good</button>
+          <button id="repairsOverride">Let me enter my own</button>
+        </div>
+      `;
+      pushStep(() => renderRepairsEstimateReview(userInfo, budget, data));
+    
+      document.getElementById("repairsAccept").addEventListener("click", () => {
+        budget.yearlyRepairs = annual;
+        budget.monthlyRepairs = Number((annual / 12).toFixed(2));
+        startPetCostsStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("repairsOverride").addEventListener("click", () => {
+        renderRepairsManual(userInfo, budget, data);
+      }, { once:true });
+    }
+    
+    function renderRepairsManual(userInfo, budget, data){
+      const app = document.getElementById("app");
+      const suggestedAnnual = data?.annual || 0;
+    
+      app.innerHTML = `
+        <h2>Yearly Home Repairs & Maintenance</h2>
+        <label>After reviewing, enter your own yearly estimate:
+          $<input type="number" id="yearlyRepairs" min="0" step="0.01" value="${suggestedAnnual.toFixed(2)}">
+        </label>
+        <div class="row"></div>
+        <div class="actions">
+          <button id="repairsUse" class="primary">Use this amount</button>
+          <button id="repairsBack" class="secondary">Back</button>
+        </div>
+      `;
+      pushStep(() => renderRepairsManual(userInfo, budget, data));
+    
+      document.getElementById("repairsUse").addEventListener("click", () => {
+        const val = Number(document.getElementById("yearlyRepairs").value);
+        if (isNaN(val) || val < 0) { alert("Please enter a valid non-negative number."); return; }
+        budget.yearlyRepairs = val;
+        budget.monthlyRepairs = val / 12;
+        startPetCostsStep(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("repairsBack").addEventListener("click", () => {
+        renderRepairsEstimateReview(userInfo, budget, data);
+      }, { once:true });
+    }
+        
+    
+      function appendRepairsNote() {
+        const note = document.createElement('div');
+        note.className = 'note small';
+        note.innerHTML = `
+          <strong>Housing Repairs – The Hidden Cost of Homeownership</strong><br><br>
+          Owning a home isn’t just about your mortgage, taxes, and insurance. Every system and surface in your house will eventually need repair or replacement — sometimes in expensive, unpredictable bursts.<br><br>
+          <strong>Why This Matters</strong><br>
+          <em>Not Optional:</em> Even with a well-built home, roofs wear out, furnaces fail, and plumbing breaks. Ignoring repairs can damage the home’s value and safety.<br><br>
+          <em>Unpredictable Timing:</em> You might go 3 years with nothing major, then get hit with a $12,000 HVAC replacement or roof leak.<br><br>
+          <em>The 1–3% Rule:</em> Homeowners in Ohio should plan to spend 1–3% of the home’s value per year on maintenance and repairs, depending on the home’s age.<br><br>
+          <em>Aging Factor:</em> As your home ages, the average cost per year rises — especially after 30–40 years.
+        `;
+        app.appendChild(note);
+      }
+    
+      // Boot the main view (for homeowners)
+      renderMain();
+    }
+
+    // ========== Pet Costs ==========
+    function startPetCostsStep(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Pet Costs</h2>
+        <p>Do you own pets?</p>
+        <button id="yesPets">Yes</button>
+        <button id="noPets">No</button>
+      `;
+      pushStep(() => startPetCostsStep(userInfo, budget));
+    
+      // NO PETS
+      document.getElementById("noPets").addEventListener("click", () => {
+        budget.petOwner = false;
+        budget.petCosts = 0;
+        budget.monthlyPetCosts = 0;
+        finishBudgetCalculation(userInfo, budget);
+      }, { once:true });
+    
+      // YES PETS → choose manual or estimator
+      document.getElementById("yesPets").addEventListener("click", () => {
+        app.innerHTML = `
+          <h2>Yearly Pet Expenses</h2>
+          <p>Would you like help calculating your yearly pet costs?<br>
+             <em>Note: Calculator currently supports dogs and cats.</em></p>
+          <div class="actions">
+            <button id="petManual" class="primary">Enter Manually</button>
+            <button id="petEstimate" class="secondary">Help me estimate</button>
+          </div>
+        `;
+        pushStep(() => document.getElementById("yesPets").click());
+    
+        // Manual entry path
+        document.getElementById("petManual").addEventListener("click", () => {
+          app.innerHTML = `
+            <h2>Yearly Pet Expenses</h2>
+            <label>Total yearly pet costs: $<input type="number" id="petCosts" min="0" step="0.01"></label>
+            <div class="row"></div>
+            <button id="finish" class="primary">Finish</button>
+          `;
+          pushStep(() => document.getElementById("petManual").click());
+    
+          document.getElementById("finish").addEventListener("click", () => {
+            const valStr = document.getElementById("petCosts").value.trim();
+            const valNum = Number(valStr);
+            if (valStr === "" || isNaN(valNum) || valNum < 0) {
+              alert("Please enter a valid non-negative number.");
+              return;
+            }
+            budget.petOwner = true;
+            budget.petCosts = valNum;             // yearly
+            budget.monthlyPetCosts = valNum / 12; // monthly
+            finishBudgetCalculation(userInfo, budget);
+          }, { once:true });
+        }, { once:true });
+    
+        // Estimator path
+        document.getElementById("petEstimate").addEventListener("click", () => {
+          renderPetEstimator();
+        }, { once:true });
+      }, { once:true });
+    
+      // ---- Bare-bones estimator (dogs & cats only, single average with amortization built in) ----
+      function renderPetEstimator() {
+        const app = document.getElementById("app");
+        app.innerHTML = `
+          <h2>Bare-Bones Pet Cost Estimator</h2>
+          <div class="grid">
+            <label>Small dogs (≤20 lb): <input type="number" id="dogSmall" min="0" step="1" value="0"></label>
+            <label>Medium dogs (21–60 lb): <input type="number" id="dogMed" min="0" step="1" value="0"></label>
+            <label>Large dogs (61+ lb): <input type="number" id="dogLarge" min="0" step="1" value="0"></label>
+            <label>Indoor cats: <input type="number" id="cats" min="0" step="1" value="0"></label>
+          </div>
+    
+          <div class="row"></div>
+          <div class="actions">
+            <button id="usePetEstimate" class="primary">Use Estimate</button>
+            <button id="cancelPetEstimate" class="secondary">Back</button>
+          </div>
+        `;
+        pushStep(() => renderPetEstimator());
+    
+        // Info note: what’s included/excluded
+        const note = document.createElement('div');
+        note.className = 'note small';
+        note.innerHTML = `
+          <strong>What this includes (bare-bones, not negligent):</strong>
+          food, core parasite prevention, annual exam + core vaccines,
+          dog license, basic hygiene (dogs: nail trims/brush; cats rely on a scratching post),
+          poop bags/litter, a small emergency reserve, and a modest <em>built-in amortization</em>
+          for early costs (spay/neuter, microchip, initial vaccines, basic gear) <em>and</em>
+          senior screening bloodwork averaged across life stages.<br>
+          <strong>Excluded:</strong> insurance, pro grooming (unless the breed truly requires it),
+          premium diets/treats, daycare/boarding, training classes, apparel.
+        `;
+        app.appendChild(note);
+    
+        // Single bare-bones monthly averages (already include amortization)
+        const COSTS = {
+          dogSmall: 85,   // per month
+          dogMed:   115,
+          dogLarge: 155,
+          cat:      70
+        };
+    
+        document.getElementById("usePetEstimate").addEventListener("click", () => {
+          const nSmall = Number(document.getElementById("dogSmall").value) || 0;
+          const nMed   = Number(document.getElementById("dogMed").value)   || 0;
+          const nLarge = Number(document.getElementById("dogLarge").value) || 0;
+          const nCats  = Number(document.getElementById("cats").value)     || 0;
+        
+          if (nSmall < 0 || nMed < 0 || nLarge < 0 || nCats < 0) {
+            alert("Please enter non-negative values.");
+            return;
+          }
+        
+          const breakdown = {
+            counts: { nSmall, nMed, nLarge, nCats },
+            unitMonthly: { dogSmall: COSTS.dogSmall, dogMed: COSTS.dogMed, dogLarge: COSTS.dogLarge, cat: COSTS.cat }
+          };
+        
+          breakdown.subtotals = {
+            small: nSmall * COSTS.dogSmall,
+            med:   nMed   * COSTS.dogMed,
+            large: nLarge * COSTS.dogLarge,
+            cats:  nCats  * COSTS.cat
+          };
+        
+          breakdown.monthly = breakdown.subtotals.small + breakdown.subtotals.med + breakdown.subtotals.large + breakdown.subtotals.cats;
+          breakdown.annual  = breakdown.monthly * 12;
+        
+          renderPetEstimateReview(userInfo, budget, breakdown);
+        }, { once:true });
+
+    
+        document.getElementById("cancelPetEstimate").addEventListener("click", () => {
+          // Back to the manual/estimate choice screen
+          startPetCostsStep(userInfo, budget);
+        }, { once:true });
+      }
+      
+    function renderPetEstimateReview(userInfo, budget, data){
+      const app = document.getElementById("app");
+      const { counts, unitMonthly, subtotals, monthly, annual } = data;
+    
+      app.innerHTML = `
+        <h2>Pet Costs — Review</h2>
+        <p>Here’s how we calculated your estimated pet costs.</p>
+    
+        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:6px;">Type</th>
+              <th style="text-align:right; padding:6px;">Count</th>
+              <th style="text-align:right; padding:6px;">Per-month</th>
+              <th style="text-align:right; padding:6px;">Subtotal / mo</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:6px;">Small dogs (≤20 lb)</td>
+              <td style="padding:6px; text-align:right;">${counts.nSmall}</td>
+              <td style="padding:6px; text-align:right;">$${unitMonthly.dogSmall.toFixed(0)}</td>
+              <td style="padding:6px; text-align:right;">$${subtotals.small.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Medium dogs (21–60 lb)</td>
+              <td style="padding:6px; text-align:right;">${counts.nMed}</td>
+              <td style="padding:6px; text-align:right;">$${unitMonthly.dogMed.toFixed(0)}</td>
+              <td style="padding:6px; text-align:right;">$${subtotals.med.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Large dogs (61+ lb)</td>
+              <td style="padding:6px; text-align:right;">${counts.nLarge}</td>
+              <td style="padding:6px; text-align:right;">$${unitMonthly.dogLarge.toFixed(0)}</td>
+              <td style="padding:6px; text-align:right;">$${subtotals.large.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">Indoor cats</td>
+              <td style="padding:6px; text-align:right;">${counts.nCats}</td>
+              <td style="padding:6px; text-align:right;">$${unitMonthly.cat.toFixed(0)}</td>
+              <td style="padding:6px; text-align:right;">$${subtotals.cats.toFixed(2)}</td>
+            </tr>
+            <tr>
+              <td style="padding:6px;"><strong>Total (monthly)</strong></td>
+              <td></td><td></td>
+              <td style="padding:6px; text-align:right;"><strong>$${monthly.toFixed(2)}</strong></td>
+            </tr>
+            <tr>
+              <td style="padding:6px;">= Annualized</td>
+              <td></td><td></td>
+              <td style="padding:6px; text-align:right;"><strong>$${annual.toFixed(2)}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+    
+        <div class="row"></div>
+        <div class="note small">
+          What’s included: food, parasite prevention, annual exam + core vaccines,
+          license (dogs), basic hygiene, litter/poop bags, a small emergency reserve,
+          and modest amortization for early/senior care. Excludes insurance, pro grooming (unless required),
+          premium diets/treats, daycare/boarding, training classes, apparel.
+        </div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="petAccept" class="primary">This looks good</button>
+          <button id="petOverride">Let me enter my own</button>
+        </div>
+      `;
+      pushStep(() => renderPetEstimateReview(userInfo, budget, data));
+    
+      document.getElementById("petAccept").addEventListener("click", () => {
+        const totalPets = counts.nSmall + counts.nMed + counts.nLarge + counts.nCats;
+        budget.petOwner = totalPets > 0;
+        budget.monthlyPetCosts = Number(monthly.toFixed(2));
+        budget.petCosts = Number(annual.toFixed(2)); // yearly
+        finishBudgetCalculation(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("petOverride").addEventListener("click", () => {
+        renderPetManualOverride(userInfo, budget, data);
+      }, { once:true });
+    }
+    
+    function renderPetManualOverride(userInfo, budget, data){
+      const app = document.getElementById("app");
+      const suggestedAnnual = data?.annual || 0;
+    
+      app.innerHTML = `
+        <h2>Yearly Pet Expenses</h2>
+        <p>After reviewing the estimate, enter your own yearly total if you prefer.</p>
+        <label>Total yearly pet costs:
+          $<input type="number" id="petCosts" min="0" step="0.01" value="${suggestedAnnual.toFixed(2)}">
+        </label>
+        <div class="row"></div>
+        <div class="actions">
+          <button id="petUse" class="primary">Use this amount</button>
+          <button id="petBack" class="secondary">Back</button>
+        </div>
+      `;
+      pushStep(() => renderPetManualOverride(userInfo, budget, data));
+    
+      document.getElementById("petUse").addEventListener("click", () => {
+        const valStr = document.getElementById("petCosts").value.trim();
+        const valNum = Number(valStr);
+        if (valStr === "" || isNaN(valNum) || valNum < 0) {
+          alert("Please enter a valid non-negative number.");
+          return;
+        }
+        budget.petOwner = valNum > 0;
+        budget.petCosts = valNum;            // yearly
+        budget.monthlyPetCosts = valNum / 12;
+        finishBudgetCalculation(userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById("petBack").addEventListener("click", () => {
+        renderPetEstimateReview(userInfo, budget, data);
+      }, { once:true });
+    }
+      
+    }
+
+    // ========== Final Budget Calculation ==========
+    
+    function finishBudgetCalculation(userInfo, budget) {
+      budget.totalMonthlyExpenses = (budget.monthlyHousing || 0)
+        + (budget.utilityCost || 0)
+        + (budget.connectCost || 0)
+        + (budget.totalTransCost || 0)
+        + (budget.totalFood || 0)
+        + (budget.totalGoods || 0)
+        + (budget.childcareCost || 0)
+        + (budget.totalTuition || 0)
+        + (budget.totalClothes || 0) // monthly already
+        + (budget.monthlySetPayment || 0)
+        + (budget.monthlyDebtPayment || 0)
+        + (budget.totalHealthcare || 0)
+        + (budget.monthlyRepairs || 0)
+        + (budget.monthlyPetCosts || 0);
+
+      showBudgetSummary(userInfo, budget, /*cameFromManual*/false);
+    }
+
+    // ===== Summary with quick "Edit this" links =====
+    function showBudgetSummary(userInfo, budget, cameFromManual) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Budget Summary</h2>
+        <p><strong>Total monthly expenses:</strong> $${(budget.totalMonthlyExpenses || 0).toFixed(2)}</p>
+
+        <div class="grid">
+          ${row("Housing", budget.monthlyHousing, () => startHousingStep(userInfo, budget))}
+          ${row("Utilities", budget.utilityCost, () => startUtilitiesStep(userInfo, budget))}
+          ${row("Phone & Internet", budget.connectCost, () => startConnectivityStep(userInfo, budget))}
+          ${row("Transportation", budget.totalTransCost, () => startTransportationStep(userInfo, budget))}
+          ${row("Food", budget.totalFood, () => startFoodStep(userInfo, budget))}
+          ${row("Household Items", budget.totalGoods, () => startHouseholdGoodsStep(userInfo, budget))}
+          ${row("Childcare", budget.childcareCost, () => startChildcareStep(userInfo, budget))}
+          ${row("Tuition (adult + child)", budget.totalTuition, () => startTuitionStep(userInfo, budget))}
+          ${row("Clothing (monthly)", budget.totalClothes, () => startClothingStep(userInfo, budget))}
+          ${row("Student Loan (monthly)", budget.monthlySetPayment, () => startStudentLoanStep(userInfo, budget))}
+          ${row("Other Debt (monthly)", budget.monthlyDebtPayment, () => startOtherDebtStep(userInfo, budget))}
+          ${row("Healthcare (monthly)", budget.totalHealthcare, () => startHealthcareStep(userInfo, budget))}
+          ${row("Repairs (monthly)", budget.monthlyRepairs, () => startRepairsStep(userInfo, budget))}
+          ${row("Pet Costs (monthly)", budget.monthlyPetCosts, () => startPetCostsStep(userInfo, budget))}
+        </div>
+
+        <div class="row"></div>
+        <button id="restart">Restart Budget Wizard</button>
+        <button id="proceed" class="primary">Proceed</button>
+      `;
+
+      // Summary view should also be on the back stack so Back returns here
+      pushStep(() => showBudgetSummary(userInfo, budget, cameFromManual));
+
+      // Wire up "edit" links
+    document.querySelectorAll(".edit-link").forEach((el) => {
+      el.addEventListener("click", () => {
+        const raw = el.getAttribute("data-target") || "";
+        // normalize: drop anything in parentheses and trailing " (monthly)" etc.
+        const target = raw.replace(/\s*\([^)]*\)\s*/g, "").trim();
+    
+        switch (target) {
+          case "Housing":              startHousingStep(userInfo, budget); break;
+          case "Utilities":            startUtilitiesStep(userInfo, budget); break;
+          case "Phone & Internet":     startConnectivityStep(userInfo, budget); break;
+          case "Transportation":       startTransportationStep(userInfo, budget); break;
+          case "Food":                 startFoodStep(userInfo, budget); break;
+          case "Household Items":      startHouseholdGoodsStep(userInfo, budget); break;
+          case "Childcare":            startChildcareStep(userInfo, budget); break;
+          case "Tuition":              startTuitionStep(userInfo, budget); break;
+          case "Clothing":             startClothingStep(userInfo, budget); break;
+          case "Student Loan":         startStudentLoanStep(userInfo, budget); break;
+          case "Other Debt":           startOtherDebtStep(userInfo, budget); break;
+          case "Healthcare":           startHealthcareStep(userInfo, budget); break;
+          case "Repairs":              startRepairsStep(userInfo, budget); break;
+          case "Pet Costs":            startPetCostsStep(userInfo, budget); break;
+        }
+      });
+    });
+
+    document.getElementById("restart").addEventListener("click", () => {
+        // Clear the back stack and start fresh
+        stepStack.length = 0;
+        startBudgetWizard(userInfo);
+    });
+
+    document.getElementById("proceed").addEventListener("click", () => {
+      startBenefitsWizard(userInfo, budget);
+    });
+
+
+
+
+    // ========== Benefits Wizard: Willingness ==========
+    
+    function startBenefitsWizard(userInfo, budget) {
+      const app = document.getElementById("app");
+      app.innerHTML = `
+        <h2>Benefits Wizard: Willingness</h2>
+        <p>Select programs you're willing to apply for. Items you already answered earlier are locked so they don't change your budget math.</p>
+    
+        <div class="note small">
+          <strong>Locked from earlier answers</strong>
+          <ul style="margin:8px 0 0 18px;">
+            ${lockedRow("Childcare Subsidy", !!budget.usingChildcareSubsidy)}
+            ${lockedRow("EdChoice Scholarship", !!budget.usingEdChoice)}
+            ${lockedRow("Medicaid (willing to apply)", !!budget.medicaidWilling)}
+            ${lockedRow("Income-driven student loans (ICR)", !!budget.usingICR)}
+          </ul>
+          <div class="small" style="margin-top:6px;">
+            “No” means you previously chose not to apply; you’ll be able to edit that later.
+          </div>
+        </div>
+    
+        <h3 style="margin-top:16px;">Other benefits you may consider</h3>
+        <label><input type="checkbox" id="b-snap"> Food Stamps / SNAP</label>
+        <label><input type="checkbox" id="b-meals"> Free & Reduced School Meals</label>
+        <label><input type="checkbox" id="b-housing"> Housing Assistance (Section 8 / PRH)</label>
+        <label><input type="checkbox" id="b-lifeline"> Phone & Internet Assistance (Lifeline/ACP)</label>
+        <label><input type="checkbox" id="b-ssi"> Social Security (SSI/SSDI) – screening</label>
+        <label><input type="checkbox" id="b-disability"> State Disability Benefits / Services</label>
+        <label><input type="checkbox" id="b-medicare"> Medicare (65+ / disability)</label>
+        <label><input type="checkbox" id="b-heap"> Home Energy (HEAP / PIPP Plus)</label>
+
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="benefitsSave" class="primary">Continue</button>
+        </div>
+      `;
+      pushStep(() => startBenefitsWizard(userInfo, budget));
+    
+    document.getElementById("benefitsSave").addEventListener("click", () => {
+      // Save willingness for benefits we haven't asked yet
+      userInfo.benefitWillingness = {
+        snap: document.getElementById("b-snap").checked,
+        meals: document.getElementById("b-meals").checked,
+        housing: document.getElementById("b-housing").checked,
+        lifeline: document.getElementById("b-lifeline").checked,
+        socialSecurity: document.getElementById("b-ssi").checked,
+        disability: document.getElementById("b-disability").checked,
+        medicare: document.getElementById("b-medicare")?.checked || false,
+        heap: document.getElementById("b-heap")?.checked || false,
+    
+        // Preserve prior “locked” choices from earlier steps:
+        childcareSubsidy: !!budget.usingChildcareSubsidy,
+        edchoice: !!budget.usingEdChoice,
+        medicaid: !!budget.medicaidWilling,
+        icr: !!budget.usingICR
+      };
+    
+      alert("Saved! Next we’ll check benefits based on your selections.");
+      // Start the flow at the first selected benefit
+      goNextBenefit(null, userInfo, budget);
+    }, { once: true });
+
+    
+      function lockedRow(label, val) {
+        const status = val ? "Yes (locked)" : "No (locked; editable later)";
+        return `<li>${label}: <strong>${status}</strong></li>`;
+      }
+    }
+
+    
+    
+    
+    // ========== Benefits Wizard ==========
+    
+    // ===== Benefit flow router (minimal) =====
+
+    // Order of steps we’ll walk through
+    const BENEFIT_ORDER = [
+      'snap',
+      'healthcare',   // your Medicaid vs Private step
+      'medicare',
+      'childcare',    // Childcare Assistance subsidy
+      'edchoice',     // EdChoice voucher
+      'icr',          // Income-driven student loans
+      'frl',          // Free/Reduced Lunch/Breakfast
+      'housing',      // Section 8 / PRH
+      'lifeline',     // Phone/Internet
+      'ssi',          // SSI
+      'ssdi',         // SSDI
+      'heap'          // HEAP / PIPP Plus
+    ];
+    
+    // Map willingness → booleans used by router
+    function willing(userInfo, budget){
+      const w = userInfo.benefitWillingness || {};
+      return {
+        snap:        !!w.snap,
+        healthcare:  !!w.medicaid,         // locked earlier
+        medicare:    !!w.medicare,         // optional checkbox
+        childcare:   !!w.childcareSubsidy, // locked earlier if used
+        edchoice:    !!w.edchoice,         // locked earlier if used
+        icr:         !!w.icr,              // locked earlier if used
+        frl:         !!w.meals,
+        housing:     !!w.housing,
+        lifeline:    !!w.lifeline,
+        ssi:         !!w.socialSecurity,   // you used one box for SSI/SSDI
+        ssdi:        !!w.socialSecurity,
+        heap:        !!w.heap
+      };
+    }
+    
+    // Call the next selected step after `currentKey`.
+    // If currentKey is null → start at the first selected.
+    function goNextBenefit(currentKey, userInfo, budget){
+      const wl = willing(userInfo, budget);
+      const startIdx = currentKey ? BENEFIT_ORDER.indexOf(currentKey) + 1 : 0;
+    
+      for (let i = startIdx; i < BENEFIT_ORDER.length; i++){
+        const key = BENEFIT_ORDER[i];
+        if (!wl[key]) continue;
+        switch (key){
+          case 'snap':       return startSnapStep(userInfo, budget);
+          case 'healthcare': return startHealthcareCostStep(userInfo, budget);
+          case 'medicare':   return startMedicareStep(userInfo, budget);
+          case 'childcare':  return startChildcareAssistStep(userInfo, budget);
+          case 'edchoice':   return startEdChoiceBenefitStep(userInfo, budget);
+          case 'icr':        return startICRStep(userInfo, budget);
+          case 'frl':        return startFRLStep(userInfo, budget);
+          case 'housing':    return startHousingAssistStep(userInfo, budget);
+          case 'lifeline':   return startLifelineStep(userInfo, budget);
+          case 'ssi':        return startSSIStep(userInfo, budget);
+          case 'ssdi':       return startSSDIStep(userInfo, budget);
+          case 'heap':       return startHEAPStep(userInfo, budget);
+        }
+      }
+    
+      // Nothing else selected → done for now
+      alert("Benefits walkthrough complete. We’ll combine these later.");
+    }
+
+    
+    // ========== SNAP (Ohio) – Benefit vs Income ==========
+    function startSnapStep(userInfo, budget) {
+      const app = document.getElementById("app");
+    
+      // --- Use family info collected earlier ---
+      const HH = Math.min(Math.max(Number(userInfo.familySize) || 1, 1), 7);
+      const hasElderly =
+        Array.isArray(userInfo.members) && userInfo.members.some(m => Number(m.age) >= 60);
+      const hasDisability = !!(userInfo.hasStateRecognizedDisability || hasElderly);
+    
+      // --- Constants (Ohio, FY2025; gross-only simple model) ---
+      const ALLOT =        [292, 536, 768, 975, 1158, 1390, 1536];             // HH 1..7
+      const LIMIT_NO_DIS = [1632, 2215, 2798, 3380, 3963, 4546, 5129];         // 130% FPL
+      const LIMIT_DIS    = [2071, 2811, 3551, 4290, 5030, 5770, 6510];         // 165% FPL
+    
+      function clampH(h){ return Math.min(Math.max(h,1),7); }
+      function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
+    
+      function snapBenefit(h, income, hasDis) {
+        const H = clampH(h);
+        const limit  = (hasDis ? LIMIT_DIS : LIMIT_NO_DIS)[H-1];
+        const allot  = ALLOT[H-1];
+        if (!(income > 0) || income > limit) {
+          return { benefit: 0, limit, allot, eligible: false };
+        }
+        const thirtyPct = Math.ceil(0.3 * income);
+        const benefit = Math.max(0, allot - thirtyPct);
+        return { benefit, limit, allot, eligible: true };
+      }
+    
+      // ---- UI ----
+      app.innerHTML = `
+        <h2>SNAP (Ohio) — Benefit vs Income</h2>
+        <p>
+          <strong>Household:</strong> ${HH}
+          ${hasDisability ? ' — elderly/disabled present' : ''}
+        </p>
+    
+        <label>Try a monthly gross income:
+          $<input type="number" id="snapIncome" min="0" step="1" placeholder="e.g., 3200">
+        </label>
+    
+        <div class="row"></div>
+        <div id="snapKpis">
+          <div><strong>SNAP estimate:</strong> <span id="snapVal">$0</span></div>
+          <div class="small" id="snapGate">Enter income</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="snapSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="SNAP benefit curve"></svg>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Simple-mode assumptions: gross-income test only, no deductions (rent/SUA/child-care/medical) and no minimum-benefit quirks. Uses FY2025 Ohio max allotments.
+        </div>
+    
+        <div class="row"></div>
+        <button id="snapNext" class="primary">Next</button>
+      `;
+      pushStep(() => startSnapStep(userInfo, budget));
+    
+      // ---- Draw the curve (SVG, no extra CSS) ----
+      const svg = document.getElementById("snapSvg");
+      const incomeInput = document.getElementById("snapIncome");
+      const snapVal = document.getElementById("snapVal");
+      const snapGate = document.getElementById("snapGate");
+    
+      const { limit, allot } = snapBenefit(HH, 1, hasDisability);
+      const maxX = limit;            // show 0 → eligibility limit
+      const maxY = allot;            // top = max allotment
+      const W = 720, H = 260, P = 40;
+      const innerW = W - P*2, innerH = H - P*2;
+    
+      function xPix(x){ return P + (x / maxX) * innerW; }
+      function yPix(y){ return H - P - (y / maxY) * innerH; }
+    
+      function buildPath() {
+        const steps = 80;
+        let d = '';
+        for (let i = 0; i <= steps; i++) {
+          const inc = (maxX * i) / steps;
+          const b = Math.max(0, allot - Math.ceil(0.3 * inc));
+          const X = xPix(inc), Y = yPix(b);
+          d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        return d;
+      }
+    
+      function drawBase() {
+        svg.innerHTML = '';
+    
+        // axes
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', H-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', H-P);
+        axisX.setAttribute('stroke','currentColor'); axisX.setAttribute('stroke-width','1');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
+        axisY.setAttribute('stroke','currentColor'); axisY.setAttribute('stroke-width','1');
+    
+        // dashed eligibility limit line
+        const vGate = document.createElementNS('http://www.w3.org/2000/svg','line');
+        vGate.setAttribute('x1', xPix(maxX)); vGate.setAttribute('y1', P);
+        vGate.setAttribute('x2', xPix(maxX)); vGate.setAttribute('y2', H-P);
+        vGate.setAttribute('stroke','currentColor');
+        vGate.setAttribute('stroke-width','1');
+        vGate.setAttribute('stroke-dasharray','4 4');
+    
+        // curve
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', buildPath());
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        // marker for chosen income
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','snapMarker');
+        marker.setAttribute('r','4');
+        marker.setAttribute('fill','currentColor');
+    
+        // labels (endpoints)
+        const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(maxY) - 6);
+        yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
+        yLabel.textContent = fmt(maxY);
+    
+        const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLabel.setAttribute('x', xPix(maxX) - 30); xLabel.setAttribute('y', H - P + 14);
+        xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
+        xLabel.textContent = fmt(maxX);
+    
+        svg.append(axisX, axisY, vGate, path, marker, yLabel, xLabel);
+      }
+    
+      function updateFromInput() {
+        const income = Number(incomeInput.value) || 0;
+        const { benefit, limit:lim, eligible } = snapBenefit(HH, income, hasDisability);
+        snapVal.textContent = fmt(benefit);
+        snapGate.textContent = (income > 0)
+          ? (eligible ? `Eligible (≤ ${fmt(lim)})` : `Not eligible (> ${fmt(lim)})`)
+          : 'Enter income';
+    
+        // move marker
+        const marker = document.getElementById('snapMarker');
+        const incClamped = Math.min(Math.max(income, 0), maxX);
+        const b = Math.max(0, allot - Math.ceil(0.3 * incClamped));
+        marker.setAttribute('cx', xPix(incClamped));
+        marker.setAttribute('cy', yPix(b));
+      }
+    
+      drawBase();
+      updateFromInput();
+    
+      incomeInput.addEventListener('input', updateFromInput);
+    
+        document.getElementById("snapNext").addEventListener("click", () => {
+          alert("SNAP step complete. Moving on…");
+          goNextBenefit('snap', userInfo, budget);
+        }, { once:true });
+    }
+
+
+    // ========== Healthcare Costs (Ohio) – Medicaid vs Private ==========
+    function startHealthcareCostStep(userInfo, budget) {
+      // Skip Healthcare if not selected (i.e., not willing to apply for Medicaid)
+      if (!willing(userInfo, budget).healthcare) {
+        return goNextBenefit('healthcare', userInfo, budget);
+      }
+    
+      const app = document.getElementById("app");
+  
+      // --- Household / demographics from earlier steps ---
+      const members = Array.isArray(userInfo.members) ? userInfo.members : [];
+      const ages = members.map(m => Number(m.age) || 0);
+      const H = Math.min(Math.max(Number(userInfo.familySize) || ages.length || 1, 1), 7);
+    
+      // Build per-person flags the Medicaid check needs
+      // We only captured 'pregnant' earlier; per-person disability wasn't collected.
+      // We'll mark disabled=false for all; if the HH-level flag is true, mark the oldest adult as disabled (best-effort).
+      const flags = members.map(m => ({
+        pregnant: !!m.pregnant,
+        disabled: false,
+        childHasOtherInsurance: false
+      }));
+      if (userInfo.hasStateRecognizedDisability && ages.length > 0) {
+        let idx = ages.findIndex(a => a >= 19);
+        if (idx === -1) idx = 0;
+        flags[idx].disabled = true;
+      }
+    
+      // If we don't have members for some reason, fall back to a single adult 30yo
+      if (ages.length === 0) {
+        ages.push(30);
+        flags.push({ pregnant:false, disabled:false, childHasOtherInsurance:false });
+      }
+    
+      // If the user already entered a private premium earlier, we can use it as an override when needed
+      const employerPremiumOverride =
+        Number.isFinite(budget.insPremium) && budget.insPremium > 0 ? Number(budget.insPremium) : null;
+    
+      // Whether to apply Medicaid when eligible: respect earlier "willing to apply"
+      const applyMedicaid = budget.medicaidWilling === true;
+    
+      // -------- Medicaid monthly limit tables (Ohio, 2025) --------
+      // Index from 1..7 (slot 0 unused)
+      const ADULT_19_64   = [ , 1735, 2345, 2954, 3564, 4173, 4783, 5393 ];
+      const PARENTS       = [ , 1174, 1587, 1999, 2412, 2824, 3237, 3649 ];
+      const PREGNANT      = [ , 2609, 3525, 4442, 5359, 6275, 7192, 8109 ];
+      const CHILD_NOINS   = [ , 2687, 3631, 4575, 5520, 6464, 7408, 8352 ];
+      const CHILD_WITHINS = [ , 2035, 2750, 3465, 4180, 4895, 5610, 6325 ];
+    
+      // ABD references (simplified placeholders)
+      const MBIWD_250FPL_INDIV = 3261; // workers w/ disabilities
+      const ABD_SIL_LTC = 2901;        // LTC/waiver income level per individual
+    
+      function medicaidEligibilityOH(person, HH, monthlyMAGI){
+        HH = Math.min(Math.max(HH,1), 7);
+    
+        if (person.pregnant) {
+          const lim = PREGNANT[HH];
+          return { pathway:'Pregnancy', eligible: monthlyMAGI <= lim, limit: lim };
+        }
+    
+        if (person.age < 19) {
+          const lim = (person.childHasOtherInsurance ? CHILD_WITHINS : CHILD_NOINS)[HH];
+          return {
+            pathway: person.childHasOtherInsurance ? 'Child (w/ insurance)' : 'Child (no insurance)',
+            eligible: monthlyMAGI <= lim, limit: lim
+          };
+        }
+    
+        if (person.age >= 19 && person.age <= 64) {
+          const limAdult = ADULT_19_64[HH];
+          if (monthlyMAGI <= limAdult) return { pathway:'Adult (19–64)', eligible:true, limit:limAdult };
+          if (person.disabled) {
+            // Simplified worker-with-disability path
+            return { pathway:'MBIWD (worker w/ disability)', eligible: monthlyMAGI <= MBIWD_250FPL_INDIV, limit: MBIWD_250FPL_INDIV };
+          }
+          return { pathway:'Adult (19–64)', eligible:false, limit:limAdult };
+        }
+    
+        if (person.age >= 65 || person.disabled) {
+          return { pathway:'ABD / LTC', eligible: monthlyMAGI <= ABD_SIL_LTC, limit: ABD_SIL_LTC };
+        }
+    
+        return { pathway:'Unknown', eligible:false, limit:null };
+      }
+    
+      // --- Private premium estimate (only if NO Medicaid used) ---
+      function baseRate(age){
+        if (age <= 18) return 180;
+        if (age <= 24) return 260;
+        if (age <= 34) return 320;
+        if (age <= 44) return 400;
+        if (age <= 54) return 520;
+        return 700; // 55–64
+      }
+      // Family rule: charge at most 3 kids (<=18), 10% discount if >1 person
+      function estimateFamilyPremium(allAges){
+        const kids = allAges.filter(a => a <= 18).length;
+        const adults = allAges.filter(a => a > 18);
+        let sum = adults.reduce((s,a)=> s + baseRate(a), 0);
+        let chargeKids = Math.min(3, kids);
+        for (let i=0; i<chargeKids; i++) sum += baseRate(10); // kid rate
+        if (allAges.length > 1) sum *= 0.90;
+        return Math.round(sum);
+      }
+    
+      // Strict model you approved:
+      // If ANY Medicaid eligibility in HH AND applyMedicaid=true => premium=0, oop=0.
+      // Else (applyMedicaid=false OR no one eligible) => private premium for whole HH
+      function computeHealthcareCosts_STRICT({ monthlyMAGI }){
+        const elig = ages.map((age, i) => {
+          const p = { age, ...flags[i] };
+          return !!medicaidEligibilityOH(p, H, monthlyMAGI).eligible;
+        });
+        const anyMedicaid = elig.some(Boolean);
+    
+        if (applyMedicaid && anyMedicaid){
+          return {
+            insurancePremium: 0,
+            healthcareCost: 0,
+            mode: 'Medicaid',
+            notes: [
+              'At least one household member appears Medicaid-eligible.',
+              'Under this model, if Medicaid is selected, nobody buys private insurance.',
+              'Note: household-level result; detailed per-person breakdown to be added later.'
+            ]
+          };
+        }
+    
+        // Nobody uses Medicaid (either not eligible, or user chose not to apply)
+        const premium = Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
+          ? Math.round(employerPremiumOverride)
+          : estimateFamilyPremium(ages);
+    
+        const notes = [];
+        if (Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0) {
+          notes.push('Using your current private insurance premium (override).');
+        } else {
+          notes.push('Estimating private family premium (no subsidies).');
+        }
+    
+        return { insurancePremium: premium, healthcareCost: 0, mode: 'Private', notes };
+      }
+    
+      // -------- UI --------
+      app.innerHTML = `
+        <h2>Healthcare Costs — Medicaid vs Private (Ohio)</h2>
+        <p><strong>Household:</strong> ${H} &nbsp;|&nbsp; <strong>Members:</strong> ${ages.length}
+          ${budget.medicaidWilling ? ' &nbsp;|&nbsp; <em>Medicaid: willing to apply</em>' : ''}
+        </p>
+    
+        <label>Try a monthly gross income:
+          $<input type="number" id="hcIncome" min="0" step="1" placeholder="e.g., 3200">
+        </label>
+    
+        <div class="row"></div>
+        <div id="hcKpis">
+          <div><strong>Monthly premium estimate:</strong> <span id="hcPremium">$0</span></div>
+          <div class="small" id="hcMode">—</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="hcSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="Healthcare cost curve"></svg>
+    
+        <div class="row"></div>
+        <div id="hcTableWrap"></div>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Model: If anyone in the household is Medicaid-eligible <em>and</em> you chose to apply, total premium is $0.
+          Otherwise, we estimate a private family premium (no subsidies). Out-of-pocket medical costs are set to $0 in this step.
+        </div>
+    
+        <div class="row"></div>
+        <button id="hcNext" class="primary">Next</button>
+      `;
+      pushStep(() => startHealthcareCostStep(userInfo, budget));
+    
+      const incomeEl = document.getElementById('hcIncome');
+      const premiumEl = document.getElementById('hcPremium');
+      const modeEl = document.getElementById('hcMode');
+      const svg = document.getElementById('hcSvg');
+    
+      // ---- Build data: curve (annual 0..150k) + table (every 10k) ----
+      const A_MAX = 150000;              // annual income ceiling (x-axis)
+      const steps = 30;                  // curve resolution (≈ $5k steps)
+      const curvePts = [];
+      let yMax = 0;
+    
+      for (let i = 0; i <= steps; i++) {
+        const annual = (A_MAX * i) / steps;          // $0 → $150k
+        const monthlyMAGI = annual / 12;
+        const r = computeHealthcareCosts_STRICT({ monthlyMAGI });
+        const monthlyCost = r.insurancePremium + r.healthcareCost;
+        curvePts.push({ annual, monthly: monthlyCost });
+        if (monthlyCost > yMax) yMax = monthlyCost;
+      }
+      if (yMax < 100) yMax = 100; // avoid degenerate axis
+    
+      // Table at $10k increments
+      const tableRows = [];
+      for (let annual = 0; annual <= A_MAX; annual += 10000) {
+        const r = computeHealthcareCosts_STRICT({ monthlyMAGI: annual / 12 });
+        const monthlyCost = r.insurancePremium + r.healthcareCost;
+        tableRows.push({ annual, monthly: monthlyCost });
+      }
+    
+      // Save series for later combined chart
+      budget._series = budget._series || {};
+      budget._series.healthcare = {
+        points: tableRows.slice(),    // snapshot table points
+        curve: curvePts.slice(),      // snapshot curve points
+        assumptions: {
+          applyMedicaid,
+          usedOverride: Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
+        }
+      };
+    
+      // ---- Render SVG curve (no extra CSS; currentColor) ----
+      const W = 720, Hpx = 260, P = 40;
+      const innerW = W - P*2, innerH = Hpx - P*2;
+    
+      function xPix(annual){ return P + (annual / A_MAX) * innerW; }
+      function yPix(monthly){ return Hpx - P - (monthly / yMax) * innerH; }
+    
+      function drawCurve() {
+        svg.innerHTML = '';
+    
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', Hpx-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', Hpx-P);
+        axisX.setAttribute('stroke','currentColor'); axisX.setAttribute('stroke-width','1');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', Hpx-P);
+        axisY.setAttribute('stroke','currentColor'); axisY.setAttribute('stroke-width','1');
+    
+        // Build path
+        let d = '';
+        for (let i = 0; i < curvePts.length; i++) {
+          const { annual, monthly } = curvePts[i];
+          const X = xPix(annual), Y = yPix(monthly);
+          d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', 'currentColor');
+        path.setAttribute('stroke-width', '2');
+    
+        // Marker
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','hcMarker');
+        marker.setAttribute('r','4');
+        marker.setAttribute('fill','currentColor');
+    
+        // Labels
+        const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(yMax) - 6);
+        yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
+        yLabel.textContent = '$' + Math.round(yMax).toLocaleString();
+    
+        const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLabel.setAttribute('x', xPix(A_MAX) - 44); yLabel.setAttribute('dy', '0');
+        xLabel.setAttribute('y', Hpx - P + 14);
+        xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
+        xLabel.textContent = '$' + (A_MAX).toLocaleString();
+    
+        svg.append(axisX, axisY, path, marker, yLabel, xLabel);
+      }
+    
+      function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
+    
+      function updateFromInput(){
+        const incomeMonthly = Number(incomeEl.value) || 0;
+        const r = computeHealthcareCosts_STRICT({ monthlyMAGI: incomeMonthly });
+        const m = r.insurancePremium + r.healthcareCost;
+        premiumEl.textContent = fmt(m);
+        modeEl.textContent = r.mode === 'Medicaid'
+          ? 'Using Medicaid (household-level simplification)'
+          : (Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
+              ? 'Using your current private premium'
+              : 'Estimated private family premium');
+    
+        // move marker on curve
+        const marker = document.getElementById('hcMarker');
+        const annual = Math.max(0, Math.min(A_MAX, incomeMonthly * 12));
+        const curveCost =
+          computeHealthcareCosts_STRICT({ monthlyMAGI: annual / 12 }).insurancePremium;
+        marker.setAttribute('cx', xPix(annual));
+        marker.setAttribute('cy', yPix(curveCost));
+      }
+    
+      drawCurve();
+      updateFromInput();
+    
+      // ---- Render table (every $10,000) ----
+      const wrap = document.getElementById('hcTableWrap');
+      let html = `<table style="width:100%; border-collapse:collapse;">
+        <thead><tr>
+          <th style="text-align:left; padding:6px;">Annual income</th>
+          <th style="text-align:left; padding:6px;">Monthly premium</th>
+        </tr></thead><tbody>`;
+      for (const row of tableRows) {
+        html += `<tr>
+          <td style="padding:6px;">$${row.annual.toLocaleString()}</td>
+          <td style="padding:6px;">$${Math.round(row.monthly).toLocaleString()}</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+      wrap.innerHTML = html;
+    
+      // Wire input & next
+      incomeEl.addEventListener('input', updateFromInput);
+        document.getElementById('hcNext').addEventListener('click', () => {
+          alert('Healthcare step complete. Moving on…');
+          goNextBenefit('healthcare', userInfo, budget);
+        }, { once:true });
+    }
+
+
+    // ========== Medicare ==========
+    function startMedicareStep(userInfo, budget){
+      if (!willing(userInfo, budget).medicare) return goNextBenefit('medicare', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>Medicare (placeholder)</h2>
+        <p>We’ll screen for Medicare (65+ or qualifying disability), then estimate Part B/D premiums and savings programs (MSP/Extra Help).</p>
+        <button id="medicareNext" class="primary">Next</button>
+      `;
+      pushStep(() => startMedicareStep(userInfo, budget));
+      document.getElementById('medicareNext').addEventListener('click',
+        () => goNextBenefit('medicare', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== Childcare Assistance (PFCC + Child Care Choice) ==========
+    function startChildcareAssistStep(userInfo, budget){
+      // respect the router's willingness flag
+      if (!willing(userInfo, budget).childcare) return goNextBenefit('childcare', userInfo, budget);
+    
+      const app = document.getElementById('app');
+    
+      // prefills from family info if present
+      const inferredFamilySize = Number(userInfo.familySize) || (Array.isArray(userInfo.members) ? userInfo.members.length : 4);
+      const inferredKidsNeedingCare = Array.isArray(userInfo.members)
+        ? userInfo.members.filter(m => Number(m.age) >= 0 && Number(m.age) <= 12).length
+        : 0;
+    
+      app.innerHTML = `
+        <h2>Child Care Assistance (PFCC + Child Care Choice)</h2>
+    
+        <div class="grid">
+          <label>Family Size
+            <input id="cc_familySize" type="number" min="1" value="${inferredFamilySize}">
+          </label>
+          <label>Already receiving PFCC?
+            <select id="cc_currentPFCC">
+              <option value="no" selected>No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </label>
+          <label>Working/School/Training (activity requirement met)?
+            <select id="cc_activityOK">
+              <option value="yes" selected>Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label>Number of Children Needing Care
+            <input id="cc_kids" type="number" min="0" value="${Math.max(0, inferredKidsNeedingCare)}">
+          </label>
+        </div>
+    
+        <div id="cc_children"></div>
+    
+        <div class="row"></div>
+        <div class="note small">
+          <strong>What this shows:</strong> We sweep income and show where you’re eligible for
+          <em>PFCC initial</em> (≤145% FPL, or ≤150% with special needs),
+          <em>Child Care Choice</em> (146–200% FPL), and
+          <em>PFCC continuation-only</em> (200–300% FPL for current recipients).
+          Out-of-pocket is your Ohio copay (per rule) when eligible, or full market cost otherwise.<br>
+          <em>Assumes provider accepts state rate (no over-rate fees).</em>
+        </div>
+    
+        <div class="actions" style="margin-top:10px;">
+          <button id="cc_run" class="primary">Run Child Care Sweep</button>
+          <button id="cc_next" class="secondary" disabled>Next</button>
+        </div>
+    
+        <canvas id="cc_chart" width="760" height="340" style="margin-top:12px;"></canvas>
+        <div id="cc_legend" class="small" style="margin-top:6px;"></div>
+        <div id="cc_table" style="margin-top:10px; overflow-x:auto;"></div>
+      `;
+      pushStep(() => startChildcareAssistStep(userInfo, budget));
+    
+      // ---- 2025 HHS FPL (annual). For size >10 add $5,440 per extra person. ----
+      const FPL_2025 = [null, 15590, 21030, 26470, 31910, 37350, 42790, 48230, 53670, 59110, 64550];
+      const FPL_annual = s => (s <= 10 ? FPL_2025[s] : FPL_2025[10] + (s-10)*5440);
+      const FPL_monthly = s => FPL_annual(s)/12;
+    
+      // Ohio Admin Code 5180:2-16-05 – Appendix A multipliers by 5% FPL step
+      const MULT = {
+        105:0.0700,110:0.0735,115:0.0770,120:0.0805,125:0.0840,130:0.0875,
+        135:0.0875,140:0.0875,145:0.0875,150:0.0875,155:0.0875,160:0.0875,
+        165:0.0875,170:0.0875,175:0.0875,180:0.0875,185:0.0875,190:0.0875,
+        195:0.0875,200:0.0875,205:0.0900,210:0.1000,215:0.1100,220:0.1200,
+        225:0.1300,230:0.1400,235:0.1500,240:0.1600,245:0.1700,250:0.1800,
+        255:0.1900,260:0.2000,265:0.2100,270:0.2200,275:0.2300,280:0.2400,
+        285:0.2500,290:0.2600,295:0.2700,300:0.2700
+      };
+    
+      // Elements
+      const familySizeEl = document.getElementById('cc_familySize');
+      const currentPFCCEl = document.getElementById('cc_currentPFCC');
+      const activityOKEl = document.getElementById('cc_activityOK');
+      const kidsEl = document.getElementById('cc_kids');
+      const childrenWrap = document.getElementById('cc_children');
+      const runBtn = document.getElementById('cc_run');
+      const nextBtn = document.getElementById('cc_next');
+      const chartEl = document.getElementById('cc_chart');
+      const legendEl = document.getElementById('cc_legend');
+      const tableEl = document.getElementById('cc_table');
+    
+      // Child rows (special needs, market cost, care type)
+      function renderChildren(){
+        const n = Math.max(0, Number(kidsEl.value|0));
+        childrenWrap.innerHTML = '';
+        if(n === 0) return;
+        const frag = document.createDocumentFragment();
+        for(let i=0;i<n;i++){
+          const row = document.createElement('div');
+          row.className = 'grid';
+          row.style.marginTop = '8px';
+          row.innerHTML = `
+            <label>Child ${i+1}: Special Needs?
+              <select id="cc_sn_${i}">
+                <option value="no" selected>No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </label>
+            <label>Child ${i+1}: Estimated annual market cost ($)
+              <input id="cc_cost_${i}" type="number" min="0" step="100" value="10000">
+            </label>
+            <label>Child ${i+1}: Care type
+              <select id="cc_type_${i}">
+                <option value="full">Full-day</option>
+                <option value="part">Part-day</option>
+                <option value="basc">Before/After-school</option>
+              </select>
+            </label>
+          `;
+          frag.appendChild(row);
+        }
+        childrenWrap.appendChild(frag);
+      }
+      kidsEl.addEventListener('input', renderChildren);
+      renderChildren();
+    
+      function getParams(){
+        const familySize = Number(familySizeEl.value);
+        const currentPFCC = currentPFCCEl.value === 'yes';
+        const activityOK = activityOKEl.value === 'yes';
+        const n = Number(kidsEl.value|0);
+        const children = [];
+        let anySpecial = false;
+        let totalMarket = 0;
+        for(let i=0;i<n;i++){
+          const sn = document.getElementById(`cc_sn_${i}`).value === 'yes';
+          const cost = Number(document.getElementById(`cc_cost_${i}`).value);
+          const type = document.getElementById(`cc_type_${i}`).value;
+          children.push({ specialNeeds: sn, cost, type });
+          if(sn) anySpecial = true;
+          totalMarket += (isFinite(cost) ? cost : 0);
+        }
+        // Graph settings standardized to match your other steps
+        const incomeMax = 150000;   // same top as other curves
+        const tableStep = 10000;    // <- $10k steps for the table
+        const curveSteps = 30;      // smooth-ish curve for canvas
+        return { familySize, currentPFCC, activityOK, children, anySpecial, totalMarket, incomeMax, tableStep, curveSteps };
+      }
+    
+      // True Ohio weekly copay per 5180:2-16-05
+      function weeklyCopayOhio(incomeAnnual, familySize){
+        const baseA = FPL_annual(familySize);
+        if(!baseA || baseA<=0) return 0;
+        const pctFPL = (incomeAnnual / baseA) * 100;
+        if(pctFPL <= 100) return 0; // ≤100% FPL = $0 weekly
+        const step = Math.ceil(pctFPL / 5) * 5;
+        const s = Math.max(105, Math.min(300, step));
+        const mult = MULT[s] ?? MULT[300];
+        const maxMonthlyAtStep = Math.ceil((s/100) * FPL_monthly(familySize));
+        const monthlyCopay = Math.round(maxMonthlyAtStep * mult);
+        return Math.round((monthlyCopay * 12) / 52);
+      }
+    
+      function screenAtIncome(incomeAnnual, p){
+        const baseA = FPL_annual(p.familySize);
+        const pctFPL = baseA ? (incomeAnnual / baseA) * 100 : 9999;
+        const pfccCut = p.anySpecial ? 150 : 145;
+    
+        const PFCC_apply    = p.activityOK && pctFPL <= pfccCut;
+        const CCC_eligible  = p.activityOK && !PFCC_apply && pctFPL > 145 && pctFPL <= 200;
+        const PFCC_continue = p.currentPFCC && pctFPL <= 300;
+    
+        let outOfPocket = p.totalMarket;
+        if (PFCC_apply || CCC_eligible || PFCC_continue) {
+          const wk = weeklyCopayOhio(incomeAnnual, p.familySize);
+          const annualCopay = wk * 52;
+          outOfPocket = Math.min(p.totalMarket, annualCopay); // cap at market cost
+        }
+    
+        return { income: incomeAnnual, pctFPL, PFCC_apply, CCC_eligible, PFCC_continue, outOfPocket: Math.round(outOfPocket) };
+      }
+    
+      function buildSeries(p){
+        // Curve: 0 → incomeMax in ~5k steps (like healthcare step)
+        const curve = [];
+        for (let i=0; i<=p.curveSteps; i++){
+          const income = Math.round((p.incomeMax * i) / p.curveSteps);
+          curve.push(screenAtIncome(income, p));
+        }
+        // Table: fixed $10k steps (what you asked to keep)
+        const points = [];
+        for (let income=0; income<=p.incomeMax; income+=p.tableStep){
+          points.push(screenAtIncome(income, p));
+        }
+        return { curve, points };
+      }
+    
+      function drawChart(points, p){
+        const ctx = chartEl.getContext('2d');
+        ctx.clearRect(0,0,chartEl.width, chartEl.height);
+    
+        const pad = {l:56, r:10, t:12, b:34};
+        const w = chartEl.width - pad.l - pad.r;
+        const h = chartEl.height - pad.t - pad.b;
+        const maxX = p.incomeMax;
+        const maxY = Math.max(2000, ...points.map(pt=>pt.outOfPocket), p.totalMarket);
+    
+        const x2px = x => pad.l + (x/maxX)*w;
+        const y2py = y => pad.t + h - (y/maxY)*h;
+    
+        // Shaded bands
+        const baseA = FPL_annual(p.familySize) || 1;
+        const pfccCut = p.anySpecial ? 150 : 145;
+        const xPFCC = Math.min(maxX, baseA * pfccCut/100);
+        const xCCC1 = Math.min(maxX, baseA * 1.45);
+        const xCCC2 = Math.min(maxX, baseA * 2.00);
+        const xCONT = Math.min(maxX, baseA * 3.00);
+    
+        ctx.globalAlpha = 0.12; ctx.fillRect(x2px(0), pad.t, x2px(xPFCC)-x2px(0), h);                 // PFCC initial
+        ctx.globalAlpha = 0.10; ctx.fillRect(x2px(xCCC1), pad.t, Math.max(0, x2px(xCCC2)-x2px(xCCC1)), h); // CCC
+        ctx.globalAlpha = 0.07; ctx.fillRect(x2px(xCCC2), pad.t, Math.max(0, x2px(xCONT)-x2px(xCCC2)), h); // continuation
+        ctx.globalAlpha = 1;
+    
+        // Axes
+        ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, pad.t + h); ctx.lineTo(pad.l + w, pad.t + h); ctx.stroke();
+    
+        // X ticks at $50k
+        for(let x=0; x<=maxX; x+=50000){
+          const px = x2px(x);
+          ctx.beginPath(); ctx.moveTo(px, pad.t+h); ctx.lineTo(px, pad.t+h+5); ctx.stroke();
+          ctx.fillText(`$${(x/1000).toFixed(0)}k`, px-14, pad.t+h+18);
+        }
+        // Y ticks
+        const yStep = Math.max(2000, Math.ceil(maxY/5/1000)*1000);
+        for(let y=0; y<=maxY; y+=yStep){
+          const py = y2py(y);
+          ctx.beginPath(); ctx.moveTo(pad.l-5, py); ctx.lineTo(pad.l, py); ctx.stroke();
+          ctx.fillText(`$${y.toLocaleString()}`, 8, py+3);
+        }
+    
+        // Line
+        ctx.beginPath();
+        points.forEach((pt, i)=>{
+          const px = x2px(pt.income);
+          const py = y2py(pt.outOfPocket);
+          if(i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+    
+        // Labels
+        ctx.fillText('Family Child Care Out-of-Pocket (Ohio copay) vs Income', pad.l + 130, pad.t + 10);
+        ctx.fillText('Income', pad.l + w/2 - 18, pad.t + h + 28);
+        ctx.save(); ctx.translate(16, pad.t + h/2 + 20); ctx.rotate(-Math.PI/2);
+        ctx.fillText('Out-of-Pocket ($/year)', 0, 0); ctx.restore();
+    
+        // Legend
+        legendEl.innerHTML = `
+          <div><strong>Bands:</strong>
+            PFCC initial (0–${pfccCut}% FPL) | Child Care Choice (146–200%) |
+            PFCC continuation-only (200–300% for current PFCC)</div>
+          <div><strong>FPL (size ${p.familySize}):</strong> $${baseA.toLocaleString()} —
+            ${pfccCut}%: $${Math.round(baseA*pfccCut/100).toLocaleString()},
+            200%: $${Math.round(baseA*2).toLocaleString()},
+            300%: $${Math.round(baseA*3).toLocaleString()}</div>
+          <div class="small" style="margin-top:4px;">
+            Copay computed per Ohio Admin Code 5180:2-16-05 & Appendix A; desk-aid values match.
+          </div>
+        `;
+      }
+    
+      function renderTable(points){
+        const rows = points.map(pt=>`
+          <tr>
+            <td>$${pt.income.toLocaleString()}</td>
+            <td>${pt.pctFPL.toFixed(1)}%</td>
+            <td>${pt.PFCC_apply ? '✔' : ''}</td>
+            <td>${pt.CCC_eligible ? '✔' : ''}</td>
+            <td>${pt.PFCC_continue ? '✔' : ''}</td>
+            <td>$${pt.outOfPocket.toLocaleString()}</td>
+          </tr>
+        `).join('');
+        tableEl.innerHTML = `
+          <table class="striped compact">
+            <thead>
+              <tr>
+                <th>Income</th>
+                <th>% FPL</th>
+                <th>PFCC (apply)</th>
+                <th>Choice (146–200%)</th>
+                <th>PFCC (continue)</th>
+                <th>Est. Out-of-Pocket</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+    
+      function run(){
+        const p = getParams();
+        const { curve, points } = buildSeries(p);
+    
+        // draw chart using the *curve* for smoothness…
+        drawChart(curve, p);
+        // …but show the table at exactly $10k steps
+        renderTable(points);
+    
+        // Save series for the “final compilation” graph
+        budget._series = budget._series || {};
+        budget._series.childcare = {
+          points: points.slice(),     // $10k-step points for the combined chart/table
+          curve: curve.slice(),       // higher-res line for overlays
+          assumptions: {
+            familySize: p.familySize,
+            currentPFCC: p.currentPFCC,
+            activityOK: p.activityOK,
+            kids: p.children.length,
+            anySpecial: p.anySpecial,
+            totalMarket: p.totalMarket
+          }
+        };
+    
+        // allow continuing through the router
+        nextBtn.disabled = false;
+      }
+    
+      runBtn.addEventListener('click', run, { once:false });
+      nextBtn.addEventListener('click', () => {
+        // proceed to next selected benefit step
+        goNextBenefit('childcare', userInfo, budget);
+      }, { once:true });
+    }
+
+    
+    
+    // ========== EdChoice (Private School Voucher) ==========
+    function startEdChoiceBenefitStep(userInfo, budget){
+      if (!willing(userInfo, budget).edchoice) return goNextBenefit('edchoice', userInfo, budget);
+      const app = document.getElementById('app');
+    
+      // FY25 caps (Ohio)
+      const K8_CAP = 6166;
+      const HS_CAP = 8408;
+    
+      // 2025 HHS Poverty Guidelines (48 states/DC). >10 adds $5,440 per extra person.
+      const FPL_2025 = [null, 15590, 21030, 26470, 31910, 37350, 42790, 48230, 53670, 59110, 64550];
+      function fplBase(size){ return size <= 10 ? FPL_2025[size] : (FPL_2025[10] + (size - 10) * 5440); }
+      function fplPercent(annualIncome, hh){ const base = fplBase(hh||1)||1; return (annualIncome / base) * 100; }
+    
+      // Award factor (placeholder slider; swap with official table later if needed):
+      // ≤200% → 100% of cap & tuition due is $0 by rule
+      // 201–450% → 100% of cap
+      // 450–750% → linear down to 10%; ≥750% → 10%
+      function awardFactor(pct){
+        if (pct <= 200) return 1.0;
+        if (pct <= 450) return 1.0;
+        if (pct >= 750) return 0.10;
+        const t = (pct - 450) / (750 - 450);
+        return 1.0 - 0.90 * t;
+      }
+      function perChildAward(gradeBand, pctFPL){
+        const cap = gradeBand === 'HS' ? HS_CAP : K8_CAP;
+        return cap * awardFactor(pctFPL);
+      }
+    
+      app.innerHTML = `
+        <h2>EdChoice Scholarship — Ohio</h2>
+        <p>Enter your family, income, and private-school tuition details. We’ll estimate your out-of-pocket after EdChoice.</p>
+    
+        <div class="grid">
+          <label>Family size
+            <input id="edcFamily" type="number" min="1" step="1" value="${Number(userInfo.familySize)||4}">
+          </label>
+          <label>Household income (annual)
+            $<input id="edcIncome" type="number" min="0" step="1000" placeholder="e.g., 65000">
+          </label>
+          <label>Number of private-school students
+            <input id="edcKids" type="number" min="0" step="1" value="0">
+          </label>
+        </div>
+    
+        <div id="edcStudents" class="row"></div>
+    
+        <div class="row"></div>
+        <div class="actions">
+          <button id="edcCalc" class="primary">Calculate</button>
+          <button id="edcSkip" class="secondary">Skip</button>
+        </div>
+    
+        <div class="row"></div>
+        <div id="edcKpis"></div>
+    
+        <div class="row"></div>
+        <svg id="edcSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="EdChoice tuition due curve"></svg>
+    
+        <div class="row"></div>
+        <div id="edcTableWrap"></div>
+    
+        <div class="row"></div>
+        <div class="note small">
+          Caps (FY25): K–8 = $6,166; HS = $8,408. At ≤200% FPL, schools cannot bill tuition above the award (fees may still apply).
+          Slider model for >450% FPL is a temporary simplification and can be swapped with the official table later.
+        </div>
+    
+        <div class="row"></div>
+        <button id="edcNext" class="primary">Next</button>
+      `;
+      pushStep(() => startEdChoiceBenefitStep(userInfo, budget));
+    
+      const familyEl = document.getElementById('edcFamily');
+      const incomeEl = document.getElementById('edcIncome');
+      const kidsEl   = document.getElementById('edcKids');
+      const area     = document.getElementById('edcStudents');
+      const kpisEl   = document.getElementById('edcKpis');
+      const svg      = document.getElementById('edcSvg');
+      const tableWrap= document.getElementById('edcTableWrap');
+    
+      // Dynamic student rows
+      function renderStudentInputs(){
+        const n = Math.max(0, Number(kidsEl.value|0));
+        area.innerHTML = '';
+        if (!n) return;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < n; i++){
+          const row = document.createElement('div');
+          row.className = 'grid';
+          row.style.marginTop = '8px';
+          row.innerHTML = `
+            <label>Student ${i+1}: Grade band
+              <select id="edcGrade_${i}">
+                <option value="K8">K–8</option>
+                <option value="HS">9–12</option>
+              </select>
+            </label>
+            <label>Student ${i+1}: Annual tuition
+              $<input id="edcTuition_${i}" type="number" min="0" step="50" value="7000">
+            </label>
+          `;
+          frag.appendChild(row);
+        }
+        area.appendChild(frag);
+      }
+      kidsEl.addEventListener('input', renderStudentInputs);
+      renderStudentInputs();
+    
+      // Core compute for a given annual income
+      function collectStudents(){
+        const n = Number(kidsEl.value|0);
+        const arr = [];
+        for (let i=0; i<n; i++){
+          const grade = (document.getElementById(`edcGrade_${i}`)?.value) || 'K8';
+          const tuition = Number(document.getElementById(`edcTuition_${i}`)?.value) || 0;
+          arr.push({ grade, tuition });
+        }
+        return arr;
+      }
+    
+      function computeAtIncome({ annualIncome, familySize, students }){
+        const pct = fplPercent(annualIncome, familySize);
+        let totalSchoolTuition = 0;
+        let totalEdChoicePays  = 0;
+        let familyTuitionDue   = 0;
+    
+        for (const s of students){
+          totalSchoolTuition += s.tuition;
+          const maxAward = perChildAward(s.grade, pct);      // award cap * factor
+          const edPays = Math.min(s.tuition, maxAward);      // EdChoice actually pays
+          totalEdChoicePays += edPays;
+    
+          if (pct <= 200){
+            // ≤200% FPL → tuition gap must be waived (fees not included here)
+            familyTuitionDue += 0;
+          } else {
+            familyTuitionDue += Math.max(0, s.tuition - edPays);
+          }
+        }
+    
+        return {
+          pctFPL: pct,
+          totalSchoolTuition,
+          totalEdChoicePays,
+          familyTuitionDue // annual
+        };
+      }
+    
+      // Drawing helpers (SVG, matched to your Healthcare step)
+      const W = 720, H = 260, P = 40;
+      function xPix(x, maxX){ return P + (x / maxX) * (W - P*2); }
+      function yPix(y, maxY){ return H - P - (y / maxY) * (H - P*2); }
+      function fmt(n){ return '$' + Math.round(Math.max(0, n)).toLocaleString(); }
+    
+      function drawCurve(points, maxX, maxY){
+        svg.innerHTML = '';
+    
+        // axes
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', H-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', H-P);
+        axisX.setAttribute('stroke','currentColor'); axisX.setAttribute('stroke-width','1');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
+        axisY.setAttribute('stroke','currentColor'); axisY.setAttribute('stroke-width','1');
+    
+        // path
+        let d = '';
+        for (let i=0; i<points.length; i++){
+          const X = xPix(points[i].x, maxX), Y = yPix(points[i].y, maxY);
+          d += (i===0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        // marker for chosen income
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','edcMarker');
+        marker.setAttribute('r','4');
+        marker.setAttribute('fill','currentColor');
+    
+        // labels
+        const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(maxY, maxX) - 6);
+        yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
+        yLabel.textContent = fmt(maxY);
+    
+        const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLabel.setAttribute('x', xPix(maxX, maxX) - 44); xLabel.setAttribute('y', H - P + 14);
+        xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
+        xLabel.textContent = '$' + (maxX).toLocaleString();
+    
+        svg.append(axisX, axisY, path, marker, yLabel, xLabel);
+      }
+    
+      // Render table at every $10k (0..150k)
+      function renderTable(rows){
+        let html = `<table style="width:100%; border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left; padding:6px;">Annual income</th>
+            <th style="text-align:left; padding:6px;">Family tuition due (annual)</th>
+          </tr></thead><tbody>`;
+        for (const r of rows){
+          html += `<tr>
+            <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.annualDue).toLocaleString()}</td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+        tableWrap.innerHTML = html;
+      }
+    
+      let lastRun = null; // stash inputs + series for marker updates and "Next"
+      function runOnce(){
+        const familySize = Math.max(1, Number(familyEl.value)||1);
+        const incomeAnnual = Math.max(0, Number(incomeEl.value)||0);
+        const students = collectStudents();
+    
+        // Summary at current income
+        const snap = computeAtIncome({ annualIncome: incomeAnnual, familySize, students });
+        kpisEl.innerHTML = `
+          <div><strong>FPL%:</strong> ${snap.pctFPL.toFixed(1)}%</div>
+          <div><strong>Total school tuition:</strong> ${fmt(snap.totalSchoolTuition)}</div>
+          <div><strong>EdChoice pays (est.):</strong> ${fmt(snap.totalEdChoicePays)}</div>
+          <div><strong>Your tuition due (annual):</strong> <span id="edcDue">${fmt(snap.familyTuitionDue)}</span></div>
+        `;
+    
+        // Build curve (0..150k) and table (every 10k)
+        const A_MAX = 150000;
+        const steps = 30;
+        const curve = [];
+        let yMax = 100;
+        for (let i=0; i<=steps; i++){
+          const annual = (A_MAX * i) / steps;
+          const r = computeAtIncome({ annualIncome: annual, familySize, students });
+          curve.push({ x: annual, y: r.familyTuitionDue });
+          if (r.familyTuitionDue > yMax) yMax = r.familyTuitionDue;
+        }
+        const tableRows = [];
+        for (let annual = 0; annual <= A_MAX; annual += 10000){
+          const r = computeAtIncome({ annualIncome: annual, familySize, students });
+          tableRows.push({ annual, annualDue: r.familyTuitionDue });
+        }
+    
+        // Save for final compilation graph
+        budget._series = budget._series || {};
+        budget._series.edchoice = {
+          points: tableRows.slice(),
+          curve:  curve.slice(),
+          assumptions: {
+            familySize,
+            students: students.map(s => ({ grade: s.grade, tuition: s.tuition })),
+            caps: { K8: K8_CAP, HS: HS_CAP },
+            policy: '≤200% FPL=0 due; 201–450%=100% cap; 450–750% linear→10% floor'
+          }
+        };
+    
+        // Draw base curve + marker
+        drawCurve(curve, A_MAX, yMax);
+        moveMarker(incomeAnnual, curve, A_MAX, yMax);
+    
+        // Table
+        renderTable(tableRows);
+    
+        // Cache for Next / live updates
+        lastRun = { familySize, incomeAnnual, students, curve, A_MAX, yMax, tableRows, currentDue: snap.familyTuitionDue };
+      }
+    
+      function moveMarker(annualIncome, curve, maxX, maxY){
+        const marker = document.getElementById('edcMarker');
+        if (!marker) return;
+        const clamped = Math.max(0, Math.min(maxX, annualIncome));
+        // recompute y at exact income for marker position
+        const tmp = computeAtIncome({ annualIncome: clamped, familySize: lastRun.familySize, students: lastRun.students });
+        marker.setAttribute('cx', xPix(clamped, maxX));
+        marker.setAttribute('cy', yPix(tmp.familyTuitionDue, maxY));
+        const dueEl = document.getElementById('edcDue');
+        if (dueEl) dueEl.textContent = fmt(tmp.familyTuitionDue);
+        lastRun.currentDue = tmp.familyTuitionDue;
+      }
+    
+      document.getElementById('edcCalc').addEventListener('click', () => {
+        runOnce();
+        // after first draw, let income input move marker live
+        incomeEl.addEventListener('input', () => {
+          if (!lastRun) return;
+          const val = Math.max(0, Number(incomeEl.value)||0);
+          moveMarker(val, lastRun.curve, lastRun.A_MAX, lastRun.yMax);
+        });
+      }, { once:true });
+    
+      document.getElementById('edcSkip').addEventListener('click', () => {
+        // no changes; continue
+        goNextBenefit('edchoice', userInfo, budget);
+      }, { once:true });
+    
+      document.getElementById('edcNext').addEventListener('click', () => {
+        // If user calculated, sync result into budget now
+        if (lastRun){
+          const monthlyDue = (lastRun.currentDue || 0) / 12;
+          budget.usingEdChoice = true;
+          budget.kidsTuition = monthlyDue; // monthly after EdChoice
+          // totalTuition = adultTuition (monthly) + kidsTuition (monthly) + kidsFees (monthly)
+          budget.totalTuition = (budget.adultTuition || 0) + (budget.kidsTuition || 0) + (budget.kidsFees || 0);
+        }
+        goNextBenefit('edchoice', userInfo, budget);
+      }, { once:true });
+    }
+
+    
+    
+    // ========== Income-Driven Student Loans (ICR/IDR) ==========
+    function startICRStep(userInfo, budget){
+      if (!willing(userInfo, budget).icr) return goNextBenefit('icr', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>Income-Driven Student Loans — placeholder</h2>
+        <p>We’ll compute IDR/ICR monthly payment from your household size and income, and sync it to your budget.</p>
+        <button id="icrNext" class="primary">Next</button>
+      `;
+      pushStep(() => startICRStep(userInfo, budget));
+      document.getElementById('icrNext').addEventListener('click',
+        () => goNextBenefit('icr', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== Free & Reduced Meals (FRL) ==========
+    function startFRLStep(userInfo, budget){
+      if (!willing(userInfo, budget).frl) return goNextBenefit('frl', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>Free & Reduced Lunch/Breakfast — placeholder</h2>
+        <p>We’ll screen for FRL eligibility using income and school status; savings may reduce your food budget.</p>
+        <button id="frlNext" class="primary">Next</button>
+      `;
+      pushStep(() => startFRLStep(userInfo, budget));
+      document.getElementById('frlNext').addEventListener('click',
+        () => goNextBenefit('frl', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== Housing Assistance (Section 8 / PRH) ==========
+    function startHousingAssistStep(userInfo, budget){
+      if (!willing(userInfo, budget).housing) return goNextBenefit('housing', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>Housing Assistance — placeholder</h2>
+        <p>We’ll estimate tenant rent share under vouchers/public housing using income; local waitlists noted in an info box.</p>
+        <button id="hsgNext" class="primary">Next</button>
+      `;
+      pushStep(() => startHousingAssistStep(userInfo, budget));
+      document.getElementById('hsgNext').addEventListener('click',
+        () => goNextBenefit('housing', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== Lifeline (Phone/Internet) ==========
+    function startLifelineStep(userInfo, budget){
+      if (!willing(userInfo, budget).lifeline) return goNextBenefit('lifeline', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>Lifeline (Phone/Internet) — placeholder</h2>
+        <p>We’ll screen for Lifeline/ACP eligibility and estimate monthly savings.</p>
+        <button id="lifeNext" class="primary">Next</button>
+      `;
+      pushStep(() => startLifelineStep(userInfo, budget));
+      document.getElementById('lifeNext').addEventListener('click',
+        () => goNextBenefit('lifeline', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== SSI ==========
+    function startSSIStep(userInfo, budget){
+      if (!willing(userInfo, budget).ssi) return goNextBenefit('ssi', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>SSI — placeholder</h2>
+        <p>We’ll add an SSI screening (income/resources/disability/age) and estimate monthly amounts.</p>
+        <button id="ssiNext" class="primary">Next</button>
+      `;
+      pushStep(() => startSSIStep(userInfo, budget));
+      document.getElementById('ssiNext').addEventListener('click',
+        () => goNextBenefit('ssi', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== SSDI ==========
+    function startSSDIStep(userInfo, budget){
+      if (!willing(userInfo, budget).ssdi) return goNextBenefit('ssdi', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>SSDI — placeholder</h2>
+        <p>We’ll add an SSDI screening (work credits/disability insured status) and timing notes.</p>
+        <button id="ssdiNext" class="primary">Next</button>
+      `;
+      pushStep(() => startSSDIStep(userInfo, budget));
+      document.getElementById('ssdiNext').addEventListener('click',
+        () => goNextBenefit('ssdi', userInfo, budget), { once:true });
+    }
+    
+    
+    // ========== HEAP / PIPP Plus ==========
+    function startHEAPStep(userInfo, budget){
+      if (!willing(userInfo, budget).heap) return goNextBenefit('heap', userInfo, budget);
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <h2>HEAP / PIPP Plus — placeholder</h2>
+        <p>We’ll estimate seasonal credits or percentage-of-income payments for utilities; locale-specific details go in an info box.</p>
+        <button id="heapNext" class="primary">Next</button>
+      `;
+      pushStep(() => startHEAPStep(userInfo, budget));
+      document.getElementById('heapNext').addEventListener('click',
+        () => goNextBenefit('heap', userInfo, budget), { once:true });
+    }
+
+
+
+
+
+
+
+
+
+    // Helper to render each row with an Edit link
+    function row(label, val, editFn) {
+        const amount = (Number(val) || 0).toFixed(2);
+        const id = `edit-${label}`;
+        // register a one-off listener after insert by using a data attribute we catch above
+        return `
+            <div>
+                <strong>${label}:</strong> $${amount}
+                &nbsp; <span class="edit-link" data-target="${label}">Edit</span>
+            </div>
+        `;
+      }
+    }
+
+    // Boot
+    console.log("init")
+    //startApp();
+  </script>
+</body>
+</html> 
