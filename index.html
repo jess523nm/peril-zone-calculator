@@ -43,6 +43,86 @@
       showDisclaimer();
     }
 
+    // === Frugal-but-Fun config + calculator ======================================
+    const FUN = {
+      meal: { sitAdult: 18, sitKid: 9, takeAdult: 10, takeKid: 6, takeoutsPerMonth: 4, taxTipFactor: 1.10 },
+      outing: { adult: 12, kid: 10, perMonth: 1 },
+      lessons: { perKid: 35, participatingShare: 0.5 },
+      gym: { household: 20 },
+      subsDefault: 25,               // used only if you don't provide an override
+      allowancePerKidPerWeek: 2.5,   // ≈ $10/mo per kid
+      visitsPerPersonPerMonth: 15,
+      replace: { householdPerMonth: 10, perPersonPerMonth: 2 },
+      gifts: { baseAnnual: 300, perKidAnnual: 50 },
+      joyPerPersonPerMonth: 5,
+      capAsPercentOfBareBones: 0.15, // cap extras to 15% of bare-bones
+      floorHousehold: 40             // never less than $40 if any people > 0
+    };
+    
+    // Optional: set these from your UI later if you like:
+    // budget.frugalSubsOverride = 150;           // your real subs/memberships
+    // budget.frugalAllowanceOverride = 45;       // kids' allowance total
+    
+    function computeFrugalFun(userInfo, budget, bareBonesMonthly){
+      const members = Array.isArray(userInfo.members) ? userInfo.members : [];
+      let A = 0, K = 0;
+      for (const m of members){
+        const age = Number(m.age) || 0;
+        if (age >= 19) A++; else K++;
+      }
+      if (!A && !K) { // fallback if no member detail captured
+        const size = Number(userInfo.familySize) || 1;
+        // assume 1 adult + rest kids as a gentle default
+        A = Math.min(1, size);
+        K = Math.max(0, size - A);
+      }
+    
+      // Eating out: 1 sit-down + ~4 takeouts / month (frugal pricing)
+      const sit = FUN.meal.taxTipFactor * (A * FUN.meal.sitAdult + K * FUN.meal.sitKid);
+      const take = FUN.meal.takeoutsPerMonth * (A * FUN.meal.takeAdult + K * FUN.meal.takeKid);
+      const eatingOut = sit + take;
+    
+      // One paid outing per month
+      const outing = FUN.outing.perMonth * (A * FUN.outing.adult + K * FUN.outing.kid);
+    
+      // Lessons + gym (half the kids on average)
+      const kidsParticipating = Math.round(K * FUN.lessons.participatingShare);
+      const lessons = kidsParticipating * FUN.lessons.perKid;
+      const gym = FUN.gym.household;
+    
+      // Subscriptions / memberships
+      const subs = Number.isFinite(budget.frugalSubsOverride) ? Number(budget.frugalSubsOverride) : FUN.subsDefault;
+    
+      // Allowance (use override if provided)
+      const allowance = Number.isFinite(budget.frugalAllowanceOverride)
+        ? Number(budget.frugalAllowanceOverride)
+        : (K * FUN.allowancePerKidPerWeek * 52 / 12);
+    
+      // Visiting relatives / local trips
+      const visits = (A + K) * FUN.visitsPerPersonPerMonth;
+    
+      // Replacement / refresh fund
+      const replace = FUN.replace.householdPerMonth + (A + K) * FUN.replace.perPersonPerMonth;
+    
+      // Gifts / holidays sinking fund
+      const gifts = (FUN.gifts.baseAnnual + K * FUN.gifts.perKidAnnual) / 12;
+    
+      // Joy buffer
+      const joy = (A + K) * FUN.joyPerPersonPerMonth;
+    
+      const raw = eatingOut + outing + lessons + gym + subs + allowance + visits + replace + gifts + joy;
+    
+      // Safety rails
+      const cap = Math.max(FUN.floorHousehold, FUN.capAsPercentOfBareBones * Math.max(0, bareBonesMonthly || 0));
+      const frugalFun = Math.min(raw, cap);
+    
+      return {
+        adults: A, kids: K,
+        components: { eatingOut, outing, lessons, gym, subs, allowance, visits, replace, gifts, joy },
+        raw, cap, frugalFun, usedCap: raw > cap
+      };
+    }
+
     // --- lightweight back stack (optional, used by wizard screens) ---------
     const stepStack = [];
     function pushStep(rerenderFn) { stepStack.push(rerenderFn); renderBack(); }
@@ -174,6 +254,82 @@
       }, { once: true });
     }
 
+    // ====== TAX/NET HELPERS (ANNUAL) ======
+    // 2025 rough standard deductions (simplified)
+    const STD_DED_2025 = { single: 14600, hoh: 22050, married: 29200 };
+    
+    // Simplified 2025 federal brackets (trimmed for this app). Add others if you like.
+    const FED_BRACKETS_2025 = {
+      single: [
+        { upTo: 11600, rate: 0.10 },
+        { upTo: 47150, rate: 0.12 },
+        { upTo: 100525, rate: 0.22 },
+        { upTo: 191950, rate: 0.24 },
+        { upTo: Infinity, rate: 0.32 }
+      ],
+      hoh: [
+        { upTo: 16850, rate: 0.10 },
+        { upTo: 64100, rate: 0.12 },
+        { upTo: 102750, rate: 0.22 },
+        { upTo: 197300, rate: 0.24 },
+        { upTo: Infinity, rate: 0.32 }
+      ],
+      married: [
+        { upTo: 23200, rate: 0.10 },
+        { upTo: 94300, rate: 0.12 },
+        { upTo: 201050, rate: 0.22 },
+        { upTo: 383900, rate: 0.24 },
+        { upTo: Infinity, rate: 0.32 }
+      ]
+    };
+    
+    // Simplified OH state withholding (progressive but coarse for UX)
+    function ohioStateTax(gross) {
+      if (gross <= 26000) return gross * 0.019;
+      if (gross <= 115000) return gross * 0.0275;
+      return gross * 0.032;
+    }
+    
+    function federalTax(gross, filingStatus) {
+      const std = STD_DED_2025[filingStatus] ?? STD_DED_2025.hoh;
+      const taxable = Math.max(0, gross - std);
+      const brackets = FED_BRACKETS_2025[filingStatus] ?? FED_BRACKETS_2025.hoh;
+      let tax = 0, prev = 0, remaining = taxable;
+    
+      for (const b of brackets) {
+        const band = Math.min(remaining, b.upTo - prev);
+        if (band > 0) {
+          tax += band * b.rate;
+          remaining -= band;
+          prev = b.upTo;
+        }
+        if (remaining <= 0) break;
+      }
+      return tax;
+    }
+    
+    function calcAnnualNet(grossAnnual, { filingStatus = 'hoh', cityRate = 0.02, retirePct = 0.05 } = {}) {
+      // Payroll
+      const ssTax = Math.min(grossAnnual, 168600) * 0.062;   // Social Security
+      const medicareTax = grossAnnual * 0.0145;              // Medicare (no surtax for now)
+    
+      // Income taxes
+      const fed = federalTax(grossAnnual, filingStatus);
+      const state = ohioStateTax(grossAnnual);
+      const local = grossAnnual * Math.max(0, Math.min(0.035, cityRate)); // clamp 0–3.5%
+    
+      // “Typical” mandatory retirement if ≥ 30k
+      const retirement = grossAnnual >= 30000 ? grossAnnual * retirePct : 0;
+    
+      const totalWithheld = fed + ssTax + medicareTax + state + local + retirement;
+      const netAnnual = Math.max(0, grossAnnual - totalWithheld);
+    
+      return {
+        grossAnnual, netAnnual,
+        components: { fed, ssTax, medicareTax, state, local, retirement }
+      };
+    }
+
 
     // ========== Budget Wizard ==========
     function startBudgetWizard(userInfo) {
@@ -210,10 +366,24 @@
         <button id="submitManualBudget" class="primary">Continue</button>
       `;
       pushStep(() => renderManualBudget(userInfo, budget));
-
+    
       document.getElementById("submitManualBudget").addEventListener("click", () => {
-        budget.totalMonthlyExpenses = Number(document.getElementById("manualBudget").value) || 0;
-        // Jump straight to summary (you can swap this to startBenefitsWizard later)
+        const bare = Number(document.getElementById("manualBudget").value) || 0;
+    
+        // Keep naming consistent with guided path
+        budget.totalMonthlyExpenses = bare;
+        budget._bareBonesMonthly = bare;
+    
+        // Compute frugal-but-fun add-on so later views have consistent inputs
+        const funCalc = computeFrugalFun(userInfo, budget, bare);
+        budget.frugalFunMonthly   = Number(funCalc.frugalFun.toFixed(2));
+        budget.frugalFunRaw       = Number(funCalc.raw.toFixed(2));
+        budget.frugalFunCap       = Number(funCalc.cap.toFixed(2));
+        budget.frugalFunCapped    = !!funCalc.usedCap;
+        budget._funBreakdown      = funCalc.components;
+        budget.totalMonthlyFrugal = Number((bare + funCalc.frugalFun).toFixed(2));
+    
+        // Show summary
         showBudgetSummary(userInfo, budget, /*cameFromManual*/true);
       }, { once:true });
     }
@@ -262,32 +432,113 @@
       }, { once:true });
     }
 
-    // ========== Utilities ==========
+    // ========== Utilities (Budget Wizard) ==========
     
     function startUtilitiesStep(userInfo, budget) {
       const app = document.getElementById("app");
+    
+      // restore prior values if user goes back
+      const prior = budget.totals?.utilities || {};
+      const priorPipp = budget.benefits?.pipp || {};
+    
+      const willingDefault = priorPipp.willingToApply ?? true;
+      const waterDefault = prior.water ?? 0;
+      const trashDefault = prior.trash ?? 0;
+      const elecDefault  = prior.electric ?? 0;
+      const gasDefault   = prior.gas ?? 0;
+    
       app.innerHTML = `
         <h2>Utilities</h2>
+    
+        <label style="display:block;margin-bottom:.5rem;">
+          <input id="pippWilling" type="checkbox" ${willingDefault ? 'checked' : ''}>
+          Are you willing to apply for PIPP?
+        </label>
+        <p id="pippNote" class="muted" style="margin-top:-.25rem;margin-bottom:.75rem;">
+          If checked, we’ll set Electric and Gas to $0 for now and calculate them in the Benefits Wizard.
+          You’ll still enter Water and Trash/Sewer here.
+        </p>
+    
         <div class="grid">
-          <label>Electricity: $<input type="number" id="elecCost" min="0" step="0.01"></label>
-          <label>Gas: $<input type="number" id="gasCost" min="0" step="0.01"></label>
-          <label>Water: $<input type="number" id="waterCost" min="0" step="0.01"></label>
-          <label>Trash/Sewer: $<input type="number" id="trashCost" min="0" step="0.01"></label>
+          <label>Electricity: $
+            <input type="number" id="elecCost" min="0" step="0.01" value="${elecDefault}">
+          </label>
+          <label>Gas: $
+            <input type="number" id="gasCost" min="0" step="0.01" value="${gasDefault}">
+          </label>
+          <label>Water: $
+            <input type="number" id="waterCost" min="0" step="0.01" value="${waterDefault}">
+          </label>
+          <label>Trash/Sewer: $
+            <input type="number" id="trashCost" min="0" step="0.01" value="${trashDefault}">
+          </label>
         </div>
+    
         <div class="row"></div>
         <button id="next" class="primary">Next</button>
       `;
+    
+      const $willing = document.getElementById("pippWilling");
+      const $elec    = document.getElementById("elecCost");
+      const $gas     = document.getElementById("gasCost");
+    
+      // lock/unlock elec/gas when willing to apply
+      function syncPippUI() {
+        const willing = $willing.checked;
+        if (willing) {
+          $elec.value = "0";
+          $gas.value  = "0";
+          $elec.disabled = true;
+          $gas.disabled  = true;
+        } else {
+          $elec.disabled = false;
+          $gas.disabled  = false;
+        }
+      }
+      $willing.addEventListener("change", syncPippUI);
+      syncPippUI();
+    
       pushStep(() => startUtilitiesStep(userInfo, budget));
-
+    
       document.getElementById("next").addEventListener("click", () => {
-        const elec = Number(document.getElementById("elecCost").value) || 0;
-        const gas = Number(document.getElementById("gasCost").value) || 0;
+        const willing = $willing.checked;
+    
+        const elec  = Number($elec.value)  || 0;
+        const gas   = Number($gas.value)   || 0;
         const water = Number(document.getElementById("waterCost").value) || 0;
         const trash = Number(document.getElementById("trashCost").value) || 0;
-        budget.utilityCost = elec + gas + water + trash;
+    
+        // Store PIPP willingness for Benefits Wizard
+        budget.benefits = budget.benefits || {};
+        budget.benefits.pipp = {
+          ...(budget.benefits.pipp || {}),
+          willingToApply: willing
+        };
+    
+        // Keep raw entries (for reference + for "not willing" final path)
+        budget.totals = budget.totals || {};
+        budget.totals.utilities = { electric: elec, gas, water, trash };
+    
+        // BARE-BONES total:
+        // - willing: water + trash
+        // - not willing: water + trash + elec + gas
+        const bareBones = willing ? (water + trash) : (water + trash + elec + gas);
+        budget.totals.utilitiesBare = {
+          water, trash,
+          electric: willing ? 0 : elec,
+          gas:      willing ? 0 : gas
+        };
+        budget.totals.utilitiesBareTotal = +bareBones.toFixed(2);
+    
+        // Legacy compatibility for anything still reading utilityCost
+        budget.utilityCost = budget.totals.utilitiesBareTotal;
+    
+        // go to next Budget step
         startConnectivityStep(userInfo, budget);
       }, { once:true });
     }
+
+
 
     // ========== Connectivity ==========
     
@@ -831,7 +1082,7 @@
         document.getElementById("adultTuitionNext").addEventListener("click", () => {
           const y = Number(document.getElementById("adultTuitionYear").value) || 0;
           budget.adultTuition = y / 12;       // store monthly
-          startTuitionStep(userInfo, budget);  // continue
+          askChildTuition(userInfo, budget);  // continue
         }, { once:true });
       }, { once:true });
     
@@ -866,10 +1117,12 @@
     
         // Applying for EdChoice → tuition handled later by benefits wizard
         document.getElementById("edYes").addEventListener("click", () => {
+          alert("We'll calculate your out-of-pocket cost during the EdChoice step in the Benefits Wizard.");
           budget.usingEdChoice = true;
-          budget.kidsTuition = 0; // monthly; benefits wizard will calculate
+          budget.kidsTuition = 0; // monthly; Benefits Wizard will calculate
           askChildSchoolFees(userInfo, budget);
         }, { once: true });
+
     
         // Not applying → collect yearly tuition now
         document.getElementById("edNo").addEventListener("click", () => {
@@ -1277,16 +1530,22 @@
         }, { once:true });
       }, { once:true });
     
-      // User does NOT have private insurance
-      document.getElementById("noHealthIns").addEventListener("click", () => {
-        budget.healthIns = false;
-        budget.medicaidWilling = true; // assume we'll check eligibility in benefits wizard
-        budget.insPremium = 0;
-        budget.yearlyMedCosts = 0;
-        budget.totalHealthcare = 0;
-        // (Benefits wizard will decide if Medicaid applies; costs stay 0 here)
-        startRepairsStep(userInfo, budget);
-      }, { once:true });
+        // User does NOT have private insurance
+        document.getElementById("noHealthIns").addEventListener("click", () => {
+          // friendly heads-up
+          if (!sessionStorage.getItem("alert_healthcare_no_once")) {
+            alert("We'll calculate your healthcare costs during the Benefits Wizard since you don't have a job-sponsored or private plan.");
+            sessionStorage.setItem("alert_healthcare_no_once", "1"); // show once per session
+          }
+        
+          budget.healthIns = false;
+          budget.medicaidWilling = true; // Benefits Wizard will check eligibility
+          budget.insPremium = 0;
+          budget.yearlyMedCosts = 0;
+          budget.totalHealthcare = 0;
+        
+          startRepairsStep(userInfo, budget);
+        }, { once:true });
     }
 
     // ========== Home Repair ==========
@@ -1781,98 +2040,150 @@
     // ========== Final Budget Calculation ==========
     
     function finishBudgetCalculation(userInfo, budget) {
-      budget.totalMonthlyExpenses = (budget.monthlyHousing || 0)
-        + (budget.utilityCost || 0)
-        + (budget.connectCost || 0)
-        + (budget.totalTransCost || 0)
-        + (budget.totalFood || 0)
-        + (budget.totalGoods || 0)
-        + (budget.childcareCost || 0)
-        + (budget.totalTuition || 0)
-        + (budget.totalClothes || 0) // monthly already
-        + (budget.monthlySetPayment || 0)
-        + (budget.monthlyDebtPayment || 0)
-        + (budget.totalHealthcare || 0)
-        + (budget.monthlyRepairs || 0)
-        + (budget.monthlyPetCosts || 0);
+    // 1) Bare-bones total 
+    const bare = (budget.monthlyHousing || 0)
+      + (budget.utilityCost || 0)
+      + (budget.connectCost || 0)
+      + (budget.totalTransCost || 0)
+      + (budget.totalFood || 0)
+      + (budget.totalGoods || 0)
+      + (budget.childcareCost || 0)
+      + (budget.totalTuition || 0)
+      + (budget.totalClothes || 0)
+      + (budget.monthlySetPayment || 0)
+      + (budget.monthlyDebtPayment || 0)
+      + (budget.totalHealthcare || 0)
+      + (budget.monthlyRepairs || 0)
+      + (budget.monthlyPetCosts || 0);
+    
+    budget.totalMonthlyExpenses = bare;           // keep old name = bare bones
+    budget._bareBonesMonthly = bare;              // explicit label for UI
+    
+    // 2) Frugal-but-Fun add-on
+    const funCalc = computeFrugalFun(userInfo, budget, bare);
+    budget.frugalFunMonthly = Number(funCalc.frugalFun.toFixed(2));
+    budget.frugalFunRaw = Number(funCalc.raw.toFixed(2));
+    budget.frugalFunCap = Number(funCalc.cap.toFixed(2));
+    budget.frugalFunCapped = !!funCalc.usedCap;   // true if cap applied
+    budget._funBreakdown = funCalc.components;    // optional: for later UI
+    
+    // 3) Combined “Frugal but Fun” total
+    budget.totalMonthlyFrugal = Number((bare + funCalc.frugalFun).toFixed(2));
+    
+    showBudgetSummary(userInfo, budget, /*cameFromManual*/false);
 
-      showBudgetSummary(userInfo, budget, /*cameFromManual*/false);
+    }
+
+
+
+    function row(label, val) {
+      const amount = (Number(val) || 0).toFixed(2);
+      return `
+        <div>
+          <strong>${label}:</strong> $${amount}
+          &nbsp; <span class="edit-link" data-target="${label}">Edit</span>
+        </div>
+      `;
     }
 
     // ===== Summary with quick "Edit this" links =====
     function showBudgetSummary(userInfo, budget, cameFromManual) {
-      const app = document.getElementById("app");
-      app.innerHTML = `
-        <h2>Budget Summary</h2>
-        <p><strong>Total monthly expenses:</strong> $${(budget.totalMonthlyExpenses || 0).toFixed(2)}</p>
-
-        <div class="grid">
-          ${row("Housing", budget.monthlyHousing, () => startHousingStep(userInfo, budget))}
-          ${row("Utilities", budget.utilityCost, () => startUtilitiesStep(userInfo, budget))}
-          ${row("Phone & Internet", budget.connectCost, () => startConnectivityStep(userInfo, budget))}
-          ${row("Transportation", budget.totalTransCost, () => startTransportationStep(userInfo, budget))}
-          ${row("Food", budget.totalFood, () => startFoodStep(userInfo, budget))}
-          ${row("Household Items", budget.totalGoods, () => startHouseholdGoodsStep(userInfo, budget))}
-          ${row("Childcare", budget.childcareCost, () => startChildcareStep(userInfo, budget))}
-          ${row("Tuition (adult + child)", budget.totalTuition, () => startTuitionStep(userInfo, budget))}
-          ${row("Clothing (monthly)", budget.totalClothes, () => startClothingStep(userInfo, budget))}
-          ${row("Student Loan (monthly)", budget.monthlySetPayment, () => startStudentLoanStep(userInfo, budget))}
-          ${row("Other Debt (monthly)", budget.monthlyDebtPayment, () => startOtherDebtStep(userInfo, budget))}
-          ${row("Healthcare (monthly)", budget.totalHealthcare, () => startHealthcareStep(userInfo, budget))}
-          ${row("Repairs (monthly)", budget.monthlyRepairs, () => startRepairsStep(userInfo, budget))}
-          ${row("Pet Costs (monthly)", budget.monthlyPetCosts, () => startPetCostsStep(userInfo, budget))}
-        </div>
-
-        <div class="row"></div>
-        <button id="restart">Restart Budget Wizard</button>
-        <button id="proceed" class="primary">Proceed</button>
-      `;
-
-      // Summary view should also be on the back stack so Back returns here
-      pushStep(() => showBudgetSummary(userInfo, budget, cameFromManual));
-
-      // Wire up "edit" links
-    document.querySelectorAll(".edit-link").forEach((el) => {
-      el.addEventListener("click", () => {
-        const raw = el.getAttribute("data-target") || "";
-        // normalize: drop anything in parentheses and trailing " (monthly)" etc.
-        const target = raw.replace(/\s*\([^)]*\)\s*/g, "").trim();
+        const app = document.getElementById("app");
+        const bare = Number(budget._bareBonesMonthly || budget.totalMonthlyExpenses || 0);
+        const funAdd = Number(budget.frugalFunMonthly || 0);
+        const frugalTotal = Number(budget.totalMonthlyFrugal || (bare + funAdd));
+        
+        app.innerHTML = `
+          <h2>Budget Summary</h2>
+        
+          <div class="note" style="margin-bottom:10px;">
+            <div><strong>Bare-bones total (monthly):</strong> $${bare.toFixed(2)}</div>
+            <div><strong>Frugal-but-Fun add-on:</strong> $${funAdd.toFixed(2)}
+              ${budget.frugalFunCapped ? '<span class="small"> (capped at '+(budget.frugalFunCap||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+')</span>' : ''}
+            </div>
+            <div><strong>Frugal-but-Fun total (monthly):</strong> $${frugalTotal.toFixed(2)}</div>
+          </div>
+        
+          <div class="note small" style="margin-bottom:14px;">
+            <strong>Post-Budget Note (Bare Bones Estimate)</strong><br>
+            <em>
+              Keep in mind: this budget leaves <strong>no</strong> room for joy, hobbies, or comfort — no space for what makes life
+              <em>living</em> instead of simply <em>not dying</em>.<br><br>
+              We all deserve to <strong>live</strong>, not merely survive. For families with small children, where parents are already working
+              full-time just to keep afloat, anything less than this bare-bones survival budget is not just inconvenient —
+              it’s a violation of human rights.
+            </em>
+          </div>
+        
+          <div class="grid">
+            ${row("Housing", budget.monthlyHousing, () => startHousingStep(userInfo, budget))}
+            ${row("Utilities", budget.utilityCost, () => startUtilitiesStep(userInfo, budget))}
+            ${row("Phone & Internet", budget.connectCost, () => startConnectivityStep(userInfo, budget))}
+            ${row("Transportation", budget.totalTransCost, () => startTransportationStep(userInfo, budget))}
+            ${row("Food", budget.totalFood, () => startFoodStep(userInfo, budget))}
+            ${row("Household Items", budget.totalGoods, () => startHouseholdGoodsStep(userInfo, budget))}
+            ${row("Childcare", budget.childcareCost, () => startChildcareStep(userInfo, budget))}
+            ${row("Tuition (adult + child)", budget.totalTuition, () => startTuitionStep(userInfo, budget))}
+            ${row("Clothing (monthly)", budget.totalClothes, () => startClothingStep(userInfo, budget))}
+            ${row("Student Loan (monthly)", budget.monthlySetPayment, () => startStudentLoanStep(userInfo, budget))}
+            ${row("Other Debt (monthly)", budget.monthlyDebtPayment, () => startOtherDebtStep(userInfo, budget))}
+            ${row("Healthcare (monthly)", budget.totalHealthcare, () => startHealthcareStep(userInfo, budget))}
+            ${row("Repairs (monthly)", budget.monthlyRepairs, () => startRepairsStep(userInfo, budget))}
+            ${row("Pet Costs (monthly)", budget.monthlyPetCosts, () => startPetCostsStep(userInfo, budget))}
+          </div>
+        
+          <div class="row"></div>
+          <button id="restart">Restart Budget Wizard</button>
+          <button id="proceed" class="primary">Proceed</button>
+        `;
     
-        switch (target) {
-          case "Housing":              startHousingStep(userInfo, budget); break;
-          case "Utilities":            startUtilitiesStep(userInfo, budget); break;
-          case "Phone & Internet":     startConnectivityStep(userInfo, budget); break;
-          case "Transportation":       startTransportationStep(userInfo, budget); break;
-          case "Food":                 startFoodStep(userInfo, budget); break;
-          case "Household Items":      startHouseholdGoodsStep(userInfo, budget); break;
-          case "Childcare":            startChildcareStep(userInfo, budget); break;
-          case "Tuition":              startTuitionStep(userInfo, budget); break;
-          case "Clothing":             startClothingStep(userInfo, budget); break;
-          case "Student Loan":         startStudentLoanStep(userInfo, budget); break;
-          case "Other Debt":           startOtherDebtStep(userInfo, budget); break;
-          case "Healthcare":           startHealthcareStep(userInfo, budget); break;
-          case "Repairs":              startRepairsStep(userInfo, budget); break;
-          case "Pet Costs":            startPetCostsStep(userInfo, budget); break;
-        }
-      });
+    
+          // Summary view should also be on the back stack so Back returns here
+          pushStep(() => showBudgetSummary(userInfo, budget, cameFromManual));
+    
+          // Wire up "edit" links
+        document.querySelectorAll(".edit-link").forEach((el) => {
+          el.addEventListener("click", () => {
+            const raw = el.getAttribute("data-target") || "";
+            // normalize: drop anything in parentheses and trailing " (monthly)" etc.
+            const target = raw.replace(/\s*\([^)]*\)\s*/g, "").trim();
+        
+            switch (target) {
+              case "Housing":              startHousingStep(userInfo, budget); break;
+              case "Utilities":            startUtilitiesStep(userInfo, budget); break;
+              case "Phone & Internet":     startConnectivityStep(userInfo, budget); break;
+              case "Transportation":       startTransportationStep(userInfo, budget); break;
+              case "Food":                 startFoodStep(userInfo, budget); break;
+              case "Household Items":      startHouseholdGoodsStep(userInfo, budget); break;
+              case "Childcare":            startChildcareStep(userInfo, budget); break;
+              case "Tuition":              startTuitionStep(userInfo, budget); break;
+              case "Clothing":             startClothingStep(userInfo, budget); break;
+              case "Student Loan":         startStudentLoanStep(userInfo, budget); break;
+              case "Other Debt":           startOtherDebtStep(userInfo, budget); break;
+              case "Healthcare":           startHealthcareStep(userInfo, budget); break;
+              case "Repairs":              startRepairsStep(userInfo, budget); break;
+              case "Pet Costs":            startPetCostsStep(userInfo, budget); break;
+            }
+          });
+        });
+    
+        document.getElementById("restart").addEventListener("click", () => {
+            // Clear the back stack and start fresh
+            stepStack.length = 0;
+            startBudgetWizard(userInfo);
+        });
+    
+        document.getElementById("proceed").addEventListener("click", () => {
+          startBenefitsWizard(userInfo, budget);
     });
 
-    document.getElementById("restart").addEventListener("click", () => {
-        // Clear the back stack and start fresh
-        stepStack.length = 0;
-        startBudgetWizard(userInfo);
-    });
 
-    document.getElementById("proceed").addEventListener("click", () => {
-      startBenefitsWizard(userInfo, budget);
-    });
-
-
-
+ 
 
     // ========== Benefits Wizard: Willingness ==========
     
     function startBenefitsWizard(userInfo, budget) {
+      const lockedPipp = !!(budget.benefits?.pipp?.willingToApply);
       const app = document.getElementById("app");
       app.innerHTML = `
         <h2>Benefits Wizard: Willingness</h2>
@@ -1885,6 +2196,7 @@
             ${lockedRow("EdChoice Scholarship", !!budget.usingEdChoice)}
             ${lockedRow("Medicaid (willing to apply)", !!budget.medicaidWilling)}
             ${lockedRow("Income-driven student loans (ICR)", !!budget.usingICR)}
+            ${lockedRow("Home Energy (PIPP Plus)", lockedPipp)}
           </ul>
           <div class="small" style="margin-top:6px;">
             “No” means you previously chose not to apply; you’ll be able to edit that later.
@@ -1899,7 +2211,6 @@
         <label><input type="checkbox" id="b-ssi"> Social Security (SSI/SSDI) – screening</label>
         <label><input type="checkbox" id="b-disability"> State Disability Benefits / Services</label>
         <label><input type="checkbox" id="b-medicare"> Medicare (65+ / disability)</label>
-        <label><input type="checkbox" id="b-heap"> Home Energy (HEAP / PIPP Plus)</label>
 
     
         <div class="row"></div>
@@ -1911,23 +2222,23 @@
     
     document.getElementById("benefitsSave").addEventListener("click", () => {
       // Save willingness for benefits we haven't asked yet
-      userInfo.benefitWillingness = {
-        snap: document.getElementById("b-snap").checked,
-        meals: document.getElementById("b-meals").checked,
-        housing: document.getElementById("b-housing").checked,
-        lifeline: document.getElementById("b-lifeline").checked,
-        socialSecurity: document.getElementById("b-ssi").checked,
-        disability: document.getElementById("b-disability").checked,
-        medicare: document.getElementById("b-medicare")?.checked || false,
-        heap: document.getElementById("b-heap")?.checked || false,
+    userInfo.benefitWillingness = {
+      snap: document.getElementById("b-snap").checked,
+      meals: document.getElementById("b-meals").checked,
+      housing: document.getElementById("b-housing").checked,
+      lifeline: document.getElementById("b-lifeline").checked,
+      socialSecurity: document.getElementById("b-ssi").checked,
+      disability: document.getElementById("b-disability").checked,
+      medicare: document.getElementById("b-medicare")?.checked || false,
     
-        // Preserve prior “locked” choices from earlier steps:
-        childcareSubsidy: !!budget.usingChildcareSubsidy,
-        edchoice: !!budget.usingEdChoice,
-        medicaid: !!budget.medicaidWilling,
-        icr: !!budget.usingICR
-      };
-    
+      // Preserve prior “locked” choices from earlier steps:
+      childcareSubsidy: !!budget.usingChildcareSubsidy,
+      edchoice:        !!budget.usingEdChoice,
+      medicaid:        !!budget.medicaidWilling,
+      icr:             !!budget.usingICR,
+      pipp:            !!(budget.benefits?.pipp?.willingToApply),
+    };
+
       alert("Saved! Next we’ll check benefits based on your selections.");
       // Start the flow at the first selected benefit
       goNextBenefit(null, userInfo, budget);
@@ -1960,7 +2271,7 @@
       'lifeline',     // Phone/Internet
       'ssi',          // SSI
       'ssdi',         // SSDI
-      'heap'          // HEAP / PIPP Plus
+      'pipp'          // PIPP Plus
     ];
     
     // Map willingness → booleans used by router
@@ -1978,41 +2289,77 @@
         lifeline:    !!w.lifeline,
         ssi:         !!w.socialSecurity,   // you used one box for SSI/SSDI
         ssdi:        !!w.socialSecurity,
-        heap:        !!w.heap
+        pipp:        !!w.pipp              // locked earlier if used
       };
     }
     
     // Call the next selected step after `currentKey`.
     // If currentKey is null → start at the first selected.
     function goNextBenefit(currentKey, userInfo, budget){
-      const wl = willing(userInfo, budget);
-      const startIdx = currentKey ? BENEFIT_ORDER.indexOf(currentKey) + 1 : 0;
+      console.log('[Benefits] next after:', currentKey, ' → willing:', willing(userInfo, budget));
     
+      const wl = willing(userInfo, budget);
+
+    
+      // Start after the provided key (or at the beginning if null/unknown)
+      const idx = BENEFIT_ORDER.indexOf(currentKey);
+      const startIdx = (currentKey && idx >= 0) ? idx + 1 : 0;
+    
+      // Step map (guarded): only call if the function actually exists.
+      // Handles naming mismatches (FRL/PIPP) gracefully.
+      const stepMap = {
+        snap:        typeof startSnapStep === 'function'             ? startSnapStep             : null,
+        healthcare:  typeof startHealthcareCostStep === 'function'   ? startHealthcareCostStep   : null,
+        medicare:    typeof startMedicareStep === 'function'         ? startMedicareStep         : null,
+        childcare:   typeof startChildcareAssistStep === 'function'  ? startChildcareAssistStep  : null,
+        edchoice:    typeof startEdChoiceBenefitStep === 'function'  ? startEdChoiceBenefitStep  : null,
+        icr:         typeof startICRStep === 'function'              ? startICRStep              : null,
+    
+        // FRL: support either startFrlStep (your file) or startFRLStep (older name)
+        frl:         (typeof startFrlStep === 'function') ? startFrlStep
+                   :  (typeof startFRLStep === 'function') ? startFRLStep : null,
+    
+        housing:     typeof startHousingAssistStep === 'function'    ? startHousingAssistStep    : null,
+        lifeline:    typeof startLifelineStep === 'function'         ? startLifelineStep         : null,
+        ssi:         typeof startSSIStep === 'function'              ? startSSIStep              : null,
+        ssdi:        typeof startSSDIStep === 'function'             ? startSSDIStep             : null,
+    
+        // PIPP: support either startPippStep (camel) or startPIPPStep (all-caps middle)
+        pipp:        (typeof startPippStep === 'function') ? startPippStep
+                   :  (typeof startPIPPStep === 'function') ? startPIPPStep : null
+      };
+    
+      // Walk forward until we find a willing step with a callable function
       for (let i = startIdx; i < BENEFIT_ORDER.length; i++){
         const key = BENEFIT_ORDER[i];
-        if (!wl[key]) continue;
-        switch (key){
-          case 'snap':       return startSnapStep(userInfo, budget);
-          case 'healthcare': return startHealthcareCostStep(userInfo, budget);
-          case 'medicare':   return startMedicareStep(userInfo, budget);
-          case 'childcare':  return startChildcareAssistStep(userInfo, budget);
-          case 'edchoice':   return startEdChoiceBenefitStep(userInfo, budget);
-          case 'icr':        return startICRStep(userInfo, budget);
-          case 'frl':        return startFRLStep(userInfo, budget);
-          case 'housing':    return startHousingAssistStep(userInfo, budget);
-          case 'lifeline':   return startLifelineStep(userInfo, budget);
-          case 'ssi':        return startSSIStep(userInfo, budget);
-          case 'ssdi':       return startSSDIStep(userInfo, budget);
-          case 'heap':       return startHEAPStep(userInfo, budget);
+        if (!wl[key]) continue; // user isn’t doing this one
+    
+        const fn = stepMap[key];
+        if (typeof fn === 'function') {
+          try {
+            return fn(userInfo, budget);
+          } catch (err) {
+            console.error(`[Benefits] Step "${key}" threw:`, err);
+            // fall through to try the next step
+          }
+        } else {
+          console.warn(`[Benefits] No step function found for "${key}". Skipping.`);
         }
       }
     
-      // Nothing else selected → done for now
-      alert("Benefits walkthrough complete. We’ll combine these later.");
+      // Nothing left (or everything was skipped) → continue the flow
+      try {
+        // Your current next stage after benefits
+        return startNetAfterTaxStep(userInfo, budget);
+      } catch (err) {
+        console.error('[Benefits] Fallback failed, trying final availability:', err);
+        return renderFinalAvailability(userInfo, budget);
+      }
     }
 
+
     
-    // ========== SNAP (Ohio) – Benefit vs Income ==========
+    // ========== SNAP (Ohio) – Benefit vs Income (Annual X, Monthly Y) ==========
     function startSnapStep(userInfo, budget) {
       const app = document.getElementById("app");
     
@@ -2023,21 +2370,22 @@
       const hasDisability = !!(userInfo.hasStateRecognizedDisability || hasElderly);
     
       // --- Constants (Ohio, FY2025; gross-only simple model) ---
-      const ALLOT =        [292, 536, 768, 975, 1158, 1390, 1536];             // HH 1..7
-      const LIMIT_NO_DIS = [1632, 2215, 2798, 3380, 3963, 4546, 5129];         // 130% FPL
-      const LIMIT_DIS    = [2071, 2811, 3551, 4290, 5030, 5770, 6510];         // 165% FPL
+      const ALLOT =        [292, 536, 768, 975, 1158, 1390, 1536];             // HH 1..7 (monthly max)
+      const LIMIT_NO_DIS = [1632, 2215, 2798, 3380, 3963, 4546, 5129];         // monthly 130% FPL
+      const LIMIT_DIS    = [2071, 2811, 3551, 4290, 5030, 5770, 6510];         // monthly 165% FPL
     
       function clampH(h){ return Math.min(Math.max(h,1),7); }
       function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
     
-      function snapBenefit(h, income, hasDis) {
+      // income = monthly gross in this function
+      function snapBenefit(h, incomeMonthly, hasDis) {
         const H = clampH(h);
-        const limit  = (hasDis ? LIMIT_DIS : LIMIT_NO_DIS)[H-1];
-        const allot  = ALLOT[H-1];
-        if (!(income > 0) || income > limit) {
+        const limit  = (hasDis ? LIMIT_DIS : LIMIT_NO_DIS)[H-1]; // monthly limit
+        const allot  = ALLOT[H-1];                               // monthly allotment
+        if (!(incomeMonthly > 0) || incomeMonthly > limit) {
           return { benefit: 0, limit, allot, eligible: false };
         }
-        const thirtyPct = Math.ceil(0.3 * income);
+        const thirtyPct = Math.ceil(0.3 * incomeMonthly);
         const benefit = Math.max(0, allot - thirtyPct);
         return { benefit, limit, allot, eligible: true };
       }
@@ -2050,14 +2398,14 @@
           ${hasDisability ? ' — elderly/disabled present' : ''}
         </p>
     
-        <label>Try a monthly gross income:
-          $<input type="number" id="snapIncome" min="0" step="1" placeholder="e.g., 3200">
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="snapIncomeAnnual" min="0" step="1" placeholder="e.g., 38400">
         </label>
     
         <div class="row"></div>
         <div id="snapKpis">
-          <div><strong>SNAP estimate:</strong> <span id="snapVal">$0</span></div>
-          <div class="small" id="snapGate">Enter income</div>
+          <div><strong>SNAP estimate (monthly):</strong> <span id="snapVal">$0</span></div>
+          <div class="small" id="snapGate">Enter salary</div>
         </div>
     
         <div class="row"></div>
@@ -2067,34 +2415,70 @@
         <div class="note small">
           Simple-mode assumptions: gross-income test only, no deductions (rent/SUA/child-care/medical) and no minimum-benefit quirks. Uses FY2025 Ohio max allotments.
         </div>
+        
+        <div id="snapStepsTable" class="card" style="margin-top:12px;"></div>
     
         <div class="row"></div>
         <button id="snapNext" class="primary">Next</button>
       `;
       pushStep(() => startSnapStep(userInfo, budget));
+      
+      // ---- $10k salary step table (0 → 100k) ----
+    (function renderSnapStepTable(){
+      const holder = document.getElementById('snapStepsTable');
+      if (!holder) return;
+    
+      const salaries = Array.from({ length: 11 }, (_, i) => i * 10000); // 0..100k
+      const rows = salaries.map(sal => {
+        const monthlyIncome = sal / 12;
+        const { benefit } = snapBenefit(HH, monthlyIncome, hasDisability);
+        const b = Math.max(0, Math.round(benefit));
+        return `<tr>
+          <td>$${sal.toLocaleString()}</td>
+          <td class="right">$${b.toLocaleString()}</td>
+        </tr>`;
+      }).join('');
+    
+      holder.innerHTML = `
+        <h3 style="margin:0 0 8px">SNAP quick reference (by annual salary)</h3>
+        <table class="tight">
+          <thead>
+            <tr><th>Annual salary</th><th class="right">SNAP est. (monthly)</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="small muted" style="margin-top:6px">
+          Simple-mode assumptions: gross-income test only (no deductions, minimum-benefit quirks),
+          FY2025 Ohio max allotments, HH=${HH}${hasDisability ? ', disability' : ''}.
+        </div>
+      `;
+    })();
+
     
       // ---- Draw the curve (SVG, no extra CSS) ----
       const svg = document.getElementById("snapSvg");
-      const incomeInput = document.getElementById("snapIncome");
+      const incomeAnnualInput = document.getElementById("snapIncomeAnnual");
       const snapVal = document.getElementById("snapVal");
       const snapGate = document.getElementById("snapGate");
     
+      // Use $1 monthly to get shapes/limits, then annualize X axis
       const { limit, allot } = snapBenefit(HH, 1, hasDisability);
-      const maxX = limit;            // show 0 → eligibility limit
-      const maxY = allot;            // top = max allotment
+      const maxXAnnual = limit * 12;   // X axis in ANNUAL dollars up to eligibility gate
+      const maxY = allot;              // Y axis is monthly benefit
       const W = 720, H = 260, P = 40;
       const innerW = W - P*2, innerH = H - P*2;
     
-      function xPix(x){ return P + (x / maxX) * innerW; }
+      function xPix(annual){ return P + (annual / maxXAnnual) * innerW; }
       function yPix(y){ return H - P - (y / maxY) * innerH; }
     
       function buildPath() {
         const steps = 80;
         let d = '';
         for (let i = 0; i <= steps; i++) {
-          const inc = (maxX * i) / steps;
-          const b = Math.max(0, allot - Math.ceil(0.3 * inc));
-          const X = xPix(inc), Y = yPix(b);
+          const annual = (maxXAnnual * i) / steps;
+          const monthlyIncome = annual / 12;
+          const b = Math.max(0, allot - Math.ceil(0.3 * monthlyIncome));
+          const X = xPix(annual), Y = yPix(b);
           d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
         }
         return d;
@@ -2114,10 +2498,10 @@
         axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
         axisY.setAttribute('stroke','currentColor'); axisY.setAttribute('stroke-width','1');
     
-        // dashed eligibility limit line
+        // dashed eligibility limit line at X = monthly limit * 12
         const vGate = document.createElementNS('http://www.w3.org/2000/svg','line');
-        vGate.setAttribute('x1', xPix(maxX)); vGate.setAttribute('y1', P);
-        vGate.setAttribute('x2', xPix(maxX)); vGate.setAttribute('y2', H-P);
+        vGate.setAttribute('x1', xPix(maxXAnnual)); vGate.setAttribute('y1', P);
+        vGate.setAttribute('x2', xPix(maxXAnnual)); vGate.setAttribute('y2', H-P);
         vGate.setAttribute('stroke','currentColor');
         vGate.setAttribute('stroke-width','1');
         vGate.setAttribute('stroke-dasharray','4 4');
@@ -2135,49 +2519,73 @@
         marker.setAttribute('r','4');
         marker.setAttribute('fill','currentColor');
     
-        // labels (endpoints)
+        // endpoint labels
         const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
         yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(maxY) - 6);
         yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
         yLabel.textContent = fmt(maxY);
     
         const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
-        xLabel.setAttribute('x', xPix(maxX) - 30); xLabel.setAttribute('y', H - P + 14);
+        xLabel.setAttribute('x', xPix(maxXAnnual) - 44); xLabel.setAttribute('y', H - P + 14);
         xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
-        xLabel.textContent = fmt(maxX);
+        xLabel.textContent = fmt(maxXAnnual);
     
-        svg.append(axisX, axisY, vGate, path, marker, yLabel, xLabel);
+        // axis titles
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', P + innerW/2 - 36); xTitle.setAttribute('y', H - 8);
+        xTitle.setAttribute('font-size','12'); xTitle.setAttribute('fill','currentColor');
+        xTitle.textContent = 'Annual salary';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 10); yTitle.setAttribute('y', P + innerH/2);
+        yTitle.setAttribute('font-size','12'); yTitle.setAttribute('fill','currentColor');
+        yTitle.setAttribute('transform', `rotate(-90, 10, ${P + innerH/2})`);
+        yTitle.textContent = 'Monthly benefit amount';
+    
+        svg.append(axisX, axisY, vGate, path, marker, yLabel, xLabel, xTitle, yTitle);
       }
     
       function updateFromInput() {
-        const income = Number(incomeInput.value) || 0;
-        const { benefit, limit:lim, eligible } = snapBenefit(HH, income, hasDisability);
-        snapVal.textContent = fmt(benefit);
-        snapGate.textContent = (income > 0)
-          ? (eligible ? `Eligible (≤ ${fmt(lim)})` : `Not eligible (> ${fmt(lim)})`)
-          : 'Enter income';
+        const annual = Number(incomeAnnualInput.value) || 0;
+        const monthlyIncome = annual / 12;
     
-        // move marker
+        const { benefit, limit: lim, eligible } = snapBenefit(HH, monthlyIncome, hasDisability);
+        snapVal.textContent = fmt(benefit);
+        snapGate.textContent = (annual > 0)
+          ? (eligible ? `Eligible (≤ ${fmt(lim*12)} annual)` : `Not eligible (> ${fmt(lim*12)} annual)`)
+          : 'Enter salary';
+    
+        // move marker (clamp to annual gate)
         const marker = document.getElementById('snapMarker');
-        const incClamped = Math.min(Math.max(income, 0), maxX);
-        const b = Math.max(0, allot - Math.ceil(0.3 * incClamped));
-        marker.setAttribute('cx', xPix(incClamped));
+        const annualClamped = Math.min(Math.max(annual, 0), maxXAnnual);
+        const b = Math.max(0, ALLOT[HH-1] - Math.ceil(0.3 * (annualClamped/12)));
+        marker.setAttribute('cx', xPix(annualClamped));
         marker.setAttribute('cy', yPix(b));
       }
     
-      drawBase();
-      updateFromInput();
+  drawBase();
+  updateFromInput();
+
+    // ---- Save a series for the final roll-up ----
+    const A_MAX = 150000; // keep in sync with your other steps
+    const snapPoints = [];
+    for (let a = 0; a <= A_MAX; a += 10000) {
+      const { benefit } = snapBenefit(HH, a / 12, hasDisability); // benefit is monthly
+      snapPoints.push({ annual: a, benefitAnnual: Math.max(0, benefit) * 12 });
+    }
+    budget._series = budget._series || {};
+    budget._series.snap = { points: snapPoints };
+
+
+      incomeAnnualInput.addEventListener('input', updateFromInput);
     
-      incomeInput.addEventListener('input', updateFromInput);
-    
-        document.getElementById("snapNext").addEventListener("click", () => {
-          alert("SNAP step complete. Moving on…");
-          goNextBenefit('snap', userInfo, budget);
-        }, { once:true });
+      document.getElementById("snapNext").addEventListener("click", () => {
+        alert("SNAP step complete. Moving on…");
+        goNextBenefit('snap', userInfo, budget);
+      }, { once:true });
     }
 
-
-    // ========== Healthcare Costs (Ohio) – Medicaid vs Private ==========
+    // ========== Healthcare Costs (Ohio) – Medicaid vs Private (Annual X / Yearly Total Y) ==========
     function startHealthcareCostStep(userInfo, budget) {
       // Skip Healthcare if not selected (i.e., not willing to apply for Medicaid)
       if (!willing(userInfo, budget).healthcare) {
@@ -2185,15 +2593,13 @@
       }
     
       const app = document.getElementById("app");
-  
+    
       // --- Household / demographics from earlier steps ---
       const members = Array.isArray(userInfo.members) ? userInfo.members : [];
       const ages = members.map(m => Number(m.age) || 0);
       const H = Math.min(Math.max(Number(userInfo.familySize) || ages.length || 1, 1), 7);
     
-      // Build per-person flags the Medicaid check needs
-      // We only captured 'pregnant' earlier; per-person disability wasn't collected.
-      // We'll mark disabled=false for all; if the HH-level flag is true, mark the oldest adult as disabled (best-effort).
+      // per-person flags the Medicaid check needs
       const flags = members.map(m => ({
         pregnant: !!m.pregnant,
         disabled: false,
@@ -2250,7 +2656,6 @@
           const limAdult = ADULT_19_64[HH];
           if (monthlyMAGI <= limAdult) return { pathway:'Adult (19–64)', eligible:true, limit:limAdult };
           if (person.disabled) {
-            // Simplified worker-with-disability path
             return { pathway:'MBIWD (worker w/ disability)', eligible: monthlyMAGI <= MBIWD_250FPL_INDIV, limit: MBIWD_250FPL_INDIV };
           }
           return { pathway:'Adult (19–64)', eligible:false, limit:limAdult };
@@ -2283,10 +2688,23 @@
         return Math.round(sum);
       }
     
-      // Strict model you approved:
-      // If ANY Medicaid eligibility in HH AND applyMedicaid=true => premium=0, oop=0.
-      // Else (applyMedicaid=false OR no one eligible) => private premium for whole HH
-      function computeHealthcareCosts_STRICT({ monthlyMAGI }){
+      // --- OOP heuristic (returns MONTHLY; we’ll ×12 later) ---
+      function estimateOOPMonthly(annualIncome){
+        if (annualIncome <= 30000) {
+          return 90;
+        } else if (annualIncome <= 70000) {
+          const t = (annualIncome - 30000) / (70000 - 30000);
+          return Math.round(90 + t * (220 - 90));
+        } else if (annualIncome <= 110000) {
+          const t = (annualIncome - 70000) / (110000 - 70000);
+          return Math.round(220 + t * (180 - 220));
+        } else {
+          return 150;
+        }
+      }
+    
+      // ===== Yearly total now (premiums + OOP per year) =====
+      function computeHealthcareYearlyTotal({ monthlyMAGI, annualIncome }){
         const elig = ages.map((age, i) => {
           const p = { age, ...flags[i] };
           return !!medicaidEligibilityOH(p, H, monthlyMAGI).eligible;
@@ -2295,46 +2713,45 @@
     
         if (applyMedicaid && anyMedicaid){
           return {
-            insurancePremium: 0,
-            healthcareCost: 0,
+            premiumYearly: 0,
+            oopYearly: 0,
+            totalYearly: 0,
             mode: 'Medicaid',
-            notes: [
-              'At least one household member appears Medicaid-eligible.',
-              'Under this model, if Medicaid is selected, nobody buys private insurance.',
-              'Note: household-level result; detailed per-person breakdown to be added later.'
-            ]
+            note: 'At least one member appears Medicaid-eligible; we treat HH as fully on Medicaid here.'
           };
         }
     
-        // Nobody uses Medicaid (either not eligible, or user chose not to apply)
-        const premium = Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
+        // Private path
+        const premiumMonthly = Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
           ? Math.round(employerPremiumOverride)
           : estimateFamilyPremium(ages);
     
-        const notes = [];
-        if (Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0) {
-          notes.push('Using your current private insurance premium (override).');
-        } else {
-          notes.push('Estimating private family premium (no subsidies).');
-        }
+        const oopMonthly = estimateOOPMonthly(annualIncome);
     
-        return { insurancePremium: premium, healthcareCost: 0, mode: 'Private', notes };
+        return {
+          premiumYearly: premiumMonthly * 12,
+          oopYearly: oopMonthly * 12,
+          totalYearly: premiumMonthly * 12 + oopMonthly * 12,
+          mode: 'Private',
+          note: (Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0)
+            ? 'Using your current private insurance premium (override).'
+            : 'Estimated private family premium; OOP includes typical copays/deductibles.'
+        };
       }
     
       // -------- UI --------
       app.innerHTML = `
         <h2>Healthcare Costs — Medicaid vs Private (Ohio)</h2>
         <p><strong>Household:</strong> ${H} &nbsp;|&nbsp; <strong>Members:</strong> ${ages.length}
-          ${budget.medicaidWilling ? ' &nbsp;|&nbsp; <em>Medicaid: willing to apply</em>' : ''}
-        </p>
+          ${budget.medicaidWilling ? ' &nbsp;|&nbsp; <em>Medicaid: willing to apply</em>' : ''}</p>
     
-        <label>Try a monthly gross income:
-          $<input type="number" id="hcIncome" min="0" step="1" placeholder="e.g., 3200">
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="hcIncome" min="0" step="1000" placeholder="e.g., 52000">
         </label>
     
         <div class="row"></div>
         <div id="hcKpis">
-          <div><strong>Monthly premium estimate:</strong> <span id="hcPremium">$0</span></div>
+          <div><strong>Yearly premium + OOP:</strong> <span id="hcPremium">$0</span></div>
           <div class="small" id="hcMode">—</div>
         </div>
     
@@ -2346,8 +2763,9 @@
     
         <div class="row"></div>
         <div class="note small">
-          Model: If anyone in the household is Medicaid-eligible <em>and</em> you chose to apply, total premium is $0.
-          Otherwise, we estimate a private family premium (no subsidies). Out-of-pocket medical costs are set to $0 in this step.
+          Model: If anyone in the household is Medicaid-eligible <em>and</em> you chose to apply, total cost is $0.
+          Otherwise, we estimate a private family premium (no ACA subsidies in this step) plus typical yearly out-of-pocket.
+          OOP uses a simple heuristic that declines modestly at higher salaries to reflect access to better employer plans.
         </div>
     
         <div class="row"></div>
@@ -2368,39 +2786,37 @@
     
       for (let i = 0; i <= steps; i++) {
         const annual = (A_MAX * i) / steps;          // $0 → $150k
-        const monthlyMAGI = annual / 12;
-        const r = computeHealthcareCosts_STRICT({ monthlyMAGI });
-        const monthlyCost = r.insurancePremium + r.healthcareCost;
-        curvePts.push({ annual, monthly: monthlyCost });
-        if (monthlyCost > yMax) yMax = monthlyCost;
+        const r = computeHealthcareYearlyTotal({ monthlyMAGI: annual / 12, annualIncome: annual });
+        curvePts.push({ annual, yearly: r.totalYearly });
+        if (r.totalYearly > yMax) yMax = r.totalYearly;
       }
-      if (yMax < 100) yMax = 100; // avoid degenerate axis
+      if (yMax < 1200) yMax = 1200; // avoid tiny axis
     
       // Table at $10k increments
       const tableRows = [];
       for (let annual = 0; annual <= A_MAX; annual += 10000) {
-        const r = computeHealthcareCosts_STRICT({ monthlyMAGI: annual / 12 });
-        const monthlyCost = r.insurancePremium + r.healthcareCost;
-        tableRows.push({ annual, monthly: monthlyCost });
+        const r = computeHealthcareYearlyTotal({ monthlyMAGI: annual / 12, annualIncome: annual });
+        tableRows.push({ annual, yearly: r.totalYearly });
       }
     
       // Save series for later combined chart
       budget._series = budget._series || {};
       budget._series.healthcare = {
-        points: tableRows.slice(),    // snapshot table points
-        curve: curvePts.slice(),      // snapshot curve points
+        points: tableRows.slice(),   // [{annual, yearly}]
+        curve: curvePts.slice(),     // [{annual, yearly}]
         assumptions: {
           applyMedicaid,
-          usedOverride: Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
+          usedOverride: Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0,
+          oopHeuristic: '12× of (90→220 monthly ramp at 30–70k, easing to 150/mo at ≥110k)'
         }
       };
     
-      // ---- Render SVG curve (no extra CSS; currentColor) ----
+      // ---- Render SVG curve (with axis titles) ----
       const W = 720, Hpx = 260, P = 40;
       const innerW = W - P*2, innerH = Hpx - P*2;
     
       function xPix(annual){ return P + (annual / A_MAX) * innerW; }
-      function yPix(monthly){ return Hpx - P - (monthly / yMax) * innerH; }
+      function yPix(yearly){ return Hpx - P - (yearly / yMax) * innerH; }
     
       function drawCurve() {
         svg.innerHTML = '';
@@ -2415,11 +2831,11 @@
         axisY.setAttribute('x2', P); axisY.setAttribute('y2', Hpx-P);
         axisY.setAttribute('stroke','currentColor'); axisY.setAttribute('stroke-width','1');
     
-        // Build path
+        // Build path (YEARLY Y)
         let d = '';
         for (let i = 0; i < curvePts.length; i++) {
-          const { annual, monthly } = curvePts[i];
-          const X = xPix(annual), Y = yPix(monthly);
+          const { annual, yearly } = curvePts[i];
+          const X = xPix(annual), Y = yPix(yearly);
           d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
         }
         const path = document.createElementNS('http://www.w3.org/2000/svg','path');
@@ -2434,41 +2850,51 @@
         marker.setAttribute('r','4');
         marker.setAttribute('fill','currentColor');
     
-        // Labels
+        // Endpoint labels
         const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
         yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(yMax) - 6);
         yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
         yLabel.textContent = '$' + Math.round(yMax).toLocaleString();
     
         const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
-        xLabel.setAttribute('x', xPix(A_MAX) - 44); yLabel.setAttribute('dy', '0');
+        xLabel.setAttribute('x', xPix(A_MAX) - 44);
         xLabel.setAttribute('y', Hpx - P + 14);
         xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
         xLabel.textContent = '$' + (A_MAX).toLocaleString();
     
-        svg.append(axisX, axisY, path, marker, yLabel, xLabel);
+        // Axis titles
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', Hpx - 6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.setAttribute('font-size','12'); xTitle.setAttribute('fill','currentColor');
+        xTitle.textContent = 'Annual salary';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', Hpx/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('font-size','12'); yTitle.setAttribute('fill','currentColor');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${Hpx/2})`);
+        yTitle.textContent = 'Yearly premium + OOP';
+    
+        svg.append(axisX, axisY, path, marker, yLabel, xLabel, xTitle, yTitle);
       }
     
       function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
     
       function updateFromInput(){
-        const incomeMonthly = Number(incomeEl.value) || 0;
-        const r = computeHealthcareCosts_STRICT({ monthlyMAGI: incomeMonthly });
-        const m = r.insurancePremium + r.healthcareCost;
-        premiumEl.textContent = fmt(m);
+        const annualIncome = Number(incomeEl.value) || 0;
+        const r = computeHealthcareYearlyTotal({ monthlyMAGI: annualIncome/12, annualIncome });
+        premiumEl.textContent = fmt(r.totalYearly);
         modeEl.textContent = r.mode === 'Medicaid'
           ? 'Using Medicaid (household-level simplification)'
-          : (Number.isFinite(employerPremiumOverride) && employerPremiumOverride > 0
-              ? 'Using your current private premium'
-              : 'Estimated private family premium');
+          : r.note;
     
-        // move marker on curve
+        // move marker on curve (YEARLY Y)
         const marker = document.getElementById('hcMarker');
-        const annual = Math.max(0, Math.min(A_MAX, incomeMonthly * 12));
-        const curveCost =
-          computeHealthcareCosts_STRICT({ monthlyMAGI: annual / 12 }).insurancePremium;
+        const annual = Math.max(0, Math.min(A_MAX, annualIncome));
+        const curveCostYearly = computeHealthcareYearlyTotal({ monthlyMAGI: annual/12, annualIncome: annual }).totalYearly;
         marker.setAttribute('cx', xPix(annual));
-        marker.setAttribute('cy', yPix(curveCost));
+        marker.setAttribute('cy', yPix(curveCostYearly));
       }
     
       drawCurve();
@@ -2479,12 +2905,12 @@
       let html = `<table style="width:100%; border-collapse:collapse;">
         <thead><tr>
           <th style="text-align:left; padding:6px;">Annual income</th>
-          <th style="text-align:left; padding:6px;">Monthly premium</th>
+          <th style="text-align:left; padding:6px;">Yearly premium + OOP</th>
         </tr></thead><tbody>`;
       for (const row of tableRows) {
         html += `<tr>
           <td style="padding:6px;">$${row.annual.toLocaleString()}</td>
-          <td style="padding:6px;">$${Math.round(row.monthly).toLocaleString()}</td>
+          <td style="padding:6px;">$${Math.round(row.yearly).toLocaleString()}</td>
         </tr>`;
       }
       html += `</tbody></table>`;
@@ -2492,10 +2918,10 @@
     
       // Wire input & next
       incomeEl.addEventListener('input', updateFromInput);
-        document.getElementById('hcNext').addEventListener('click', () => {
-          alert('Healthcare step complete. Moving on…');
-          goNextBenefit('healthcare', userInfo, budget);
-        }, { once:true });
+      document.getElementById('hcNext').addEventListener('click', () => {
+        alert('Healthcare step complete. Moving on…');
+        goNextBenefit('healthcare', userInfo, budget);
+      }, { once:true });
     }
 
 
@@ -2512,6 +2938,7 @@
       document.getElementById('medicareNext').addEventListener('click',
         () => goNextBenefit('medicare', userInfo, budget), { once:true });
     }
+    
     
     
     // ========== Childcare Assistance (PFCC + Child Care Choice) ==========
@@ -2860,7 +3287,7 @@
       function fplBase(size){ return size <= 10 ? FPL_2025[size] : (FPL_2025[10] + (size - 10) * 5440); }
       function fplPercent(annualIncome, hh){ const base = fplBase(hh||1)||1; return (annualIncome / base) * 100; }
     
-      // Award factor (placeholder slider; swap with official table later if needed):
+      // Award factor (temporary model):
       // ≤200% → 100% of cap & tuition due is $0 by rule
       // 201–450% → 100% of cap
       // 450–750% → linear down to 10%; ≥750% → 10%
@@ -2876,16 +3303,14 @@
         return cap * awardFactor(pctFPL);
       }
     
+      // UI — note there is NO income field; we sweep it.
       app.innerHTML = `
         <h2>EdChoice Scholarship — Ohio</h2>
-        <p>Enter your family, income, and private-school tuition details. We’ll estimate your out-of-pocket after EdChoice.</p>
+        <p>We’ll sweep household income from $0 to $150k and show your family’s <em>annual tuition due</em> after EdChoice, by $10,000 steps.</p>
     
         <div class="grid">
           <label>Family size
             <input id="edcFamily" type="number" min="1" step="1" value="${Number(userInfo.familySize)||4}">
-          </label>
-          <label>Household income (annual)
-            $<input id="edcIncome" type="number" min="0" step="1000" placeholder="e.g., 65000">
           </label>
           <label>Number of private-school students
             <input id="edcKids" type="number" min="0" step="1" value="0">
@@ -2896,12 +3321,9 @@
     
         <div class="row"></div>
         <div class="actions">
-          <button id="edcCalc" class="primary">Calculate</button>
+          <button id="edcRun" class="primary">Run EdChoice Sweep</button>
           <button id="edcSkip" class="secondary">Skip</button>
         </div>
-    
-        <div class="row"></div>
-        <div id="edcKpis"></div>
     
         <div class="row"></div>
         <svg id="edcSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="EdChoice tuition due curve"></svg>
@@ -2921,10 +3343,8 @@
       pushStep(() => startEdChoiceBenefitStep(userInfo, budget));
     
       const familyEl = document.getElementById('edcFamily');
-      const incomeEl = document.getElementById('edcIncome');
       const kidsEl   = document.getElementById('edcKids');
       const area     = document.getElementById('edcStudents');
-      const kpisEl   = document.getElementById('edcKpis');
       const svg      = document.getElementById('edcSvg');
       const tableWrap= document.getElementById('edcTableWrap');
     
@@ -2956,7 +3376,7 @@
       kidsEl.addEventListener('input', renderStudentInputs);
       renderStudentInputs();
     
-      // Core compute for a given annual income
+      // Helpers to read student list and compute at a given income
       function collectStudents(){
         const n = Number(kidsEl.value|0);
         const arr = [];
@@ -2976,8 +3396,8 @@
     
         for (const s of students){
           totalSchoolTuition += s.tuition;
-          const maxAward = perChildAward(s.grade, pct);      // award cap * factor
-          const edPays = Math.min(s.tuition, maxAward);      // EdChoice actually pays
+          const maxAward = perChildAward(s.grade, pct);
+          const edPays = Math.min(s.tuition, maxAward);
           totalEdChoicePays += edPays;
     
           if (pct <= 200){
@@ -2996,7 +3416,7 @@
         };
       }
     
-      // Drawing helpers (SVG, matched to your Healthcare step)
+      // SVG drawing (simple axes + line)
       const W = 720, H = 260, P = 40;
       function xPix(x, maxX){ return P + (x / maxX) * (W - P*2); }
       function yPix(y, maxY){ return H - P - (y / maxY) * (H - P*2); }
@@ -3028,15 +3448,9 @@
         path.setAttribute('stroke','currentColor');
         path.setAttribute('stroke-width','2');
     
-        // marker for chosen income
-        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
-        marker.setAttribute('id','edcMarker');
-        marker.setAttribute('r','4');
-        marker.setAttribute('fill','currentColor');
-    
         // labels
         const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
-        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(maxY, maxX) - 6);
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(maxY, maxY) - 6);
         yLabel.setAttribute('font-size','10'); yLabel.setAttribute('fill','currentColor');
         yLabel.textContent = fmt(maxY);
     
@@ -3045,10 +3459,10 @@
         xLabel.setAttribute('font-size','10'); xLabel.setAttribute('fill','currentColor');
         xLabel.textContent = '$' + (maxX).toLocaleString();
     
-        svg.append(axisX, axisY, path, marker, yLabel, xLabel);
+        svg.append(axisX, axisY, path, yLabel, xLabel);
       }
     
-      // Render table at every $10k (0..150k)
+      // Table at every $10k (0..150k)
       function renderTable(rows){
         let html = `<table style="width:100%; border-collapse:collapse;">
           <thead><tr>
@@ -3065,24 +3479,12 @@
         tableWrap.innerHTML = html;
       }
     
-      let lastRun = null; // stash inputs + series for marker updates and "Next"
-      function runOnce(){
+      function runSweep(){
         const familySize = Math.max(1, Number(familyEl.value)||1);
-        const incomeAnnual = Math.max(0, Number(incomeEl.value)||0);
         const students = collectStudents();
     
-        // Summary at current income
-        const snap = computeAtIncome({ annualIncome: incomeAnnual, familySize, students });
-        kpisEl.innerHTML = `
-          <div><strong>FPL%:</strong> ${snap.pctFPL.toFixed(1)}%</div>
-          <div><strong>Total school tuition:</strong> ${fmt(snap.totalSchoolTuition)}</div>
-          <div><strong>EdChoice pays (est.):</strong> ${fmt(snap.totalEdChoicePays)}</div>
-          <div><strong>Your tuition due (annual):</strong> <span id="edcDue">${fmt(snap.familyTuitionDue)}</span></div>
-        `;
-    
-        // Build curve (0..150k) and table (every 10k)
         const A_MAX = 150000;
-        const steps = 30;
+        const steps = 30; // curve smoothness
         const curve = [];
         let yMax = 100;
         for (let i=0; i<=steps; i++){
@@ -3097,7 +3499,7 @@
           tableRows.push({ annual, annualDue: r.familyTuitionDue });
         }
     
-        // Save for final compilation graph
+        // Save for the combined “final compilation” chart
         budget._series = budget._series || {};
         budget._series.edchoice = {
           points: tableRows.slice(),
@@ -3110,88 +3512,407 @@
           }
         };
     
-        // Draw base curve + marker
         drawCurve(curve, A_MAX, yMax);
-        moveMarker(incomeAnnual, curve, A_MAX, yMax);
-    
-        // Table
         renderTable(tableRows);
-    
-        // Cache for Next / live updates
-        lastRun = { familySize, incomeAnnual, students, curve, A_MAX, yMax, tableRows, currentDue: snap.familyTuitionDue };
       }
     
-      function moveMarker(annualIncome, curve, maxX, maxY){
-        const marker = document.getElementById('edcMarker');
-        if (!marker) return;
-        const clamped = Math.max(0, Math.min(maxX, annualIncome));
-        // recompute y at exact income for marker position
-        const tmp = computeAtIncome({ annualIncome: clamped, familySize: lastRun.familySize, students: lastRun.students });
-        marker.setAttribute('cx', xPix(clamped, maxX));
-        marker.setAttribute('cy', yPix(tmp.familyTuitionDue, maxY));
-        const dueEl = document.getElementById('edcDue');
-        if (dueEl) dueEl.textContent = fmt(tmp.familyTuitionDue);
-        lastRun.currentDue = tmp.familyTuitionDue;
-      }
-    
-      document.getElementById('edcCalc').addEventListener('click', () => {
-        runOnce();
-        // after first draw, let income input move marker live
-        incomeEl.addEventListener('input', () => {
-          if (!lastRun) return;
-          const val = Math.max(0, Number(incomeEl.value)||0);
-          moveMarker(val, lastRun.curve, lastRun.A_MAX, lastRun.yMax);
-        });
-      }, { once:true });
+      document.getElementById('edcRun').addEventListener('click', runSweep, { once:false });
     
       document.getElementById('edcSkip').addEventListener('click', () => {
-        // no changes; continue
         goNextBenefit('edchoice', userInfo, budget);
       }, { once:true });
     
       document.getElementById('edcNext').addEventListener('click', () => {
-        // If user calculated, sync result into budget now
-        if (lastRun){
-          const monthlyDue = (lastRun.currentDue || 0) / 12;
-          budget.usingEdChoice = true;
-          budget.kidsTuition = monthlyDue; // monthly after EdChoice
-          // totalTuition = adultTuition (monthly) + kidsTuition (monthly) + kidsFees (monthly)
-          budget.totalTuition = (budget.adultTuition || 0) + (budget.kidsTuition || 0) + (budget.kidsFees || 0);
-        }
+        // Nothing to sync into budget here (EdChoice is informational for OOP at various incomes)
         goNextBenefit('edchoice', userInfo, budget);
       }, { once:true });
     }
 
     
     
-    // ========== Income-Driven Student Loans (ICR/IDR) ==========
+    // ========== Income-Driven Student Loans (ICR/IBR) ==========
     function startICRStep(userInfo, budget){
       if (!willing(userInfo, budget).icr) return goNextBenefit('icr', userInfo, budget);
+    
       const app = document.getElementById('app');
+    
+      // ------- Household + income -------
+      const H = Math.min(Math.max(Number(userInfo.familySize) || 1, 1), 12);
+      const defaultAGI = Math.max(0, Number(userInfo.annualIncome) || Number(userInfo.salaryAnnual) || 0);
+    
+      // 2024 FPL (48 states & DC). HH=1: 15060, each add'l +5380.
+      function fpl(hh){
+        hh = Math.min(Math.max(hh,1), 20);
+        return 15060 + (hh - 1) * 5380;
+      }
+    
+      // Payment calculators (yearly). We keep it simple & transparent.
+      function payICR(agi, hh){
+        const disc = Math.max(0, agi - fpl(hh));          // 100% FPL
+        return 0.20 * disc;                                // 20% of discretionary income
+      }
+      function payIBR(agi, hh){
+        const disc = Math.max(0, agi - 1.5 * fpl(hh));     // 150% FPL
+        return 0.15 * disc;                                 // 15% of discretionary income
+      }
+    
       app.innerHTML = `
-        <h2>Income-Driven Student Loans — placeholder</h2>
-        <p>We’ll compute IDR/ICR monthly payment from your household size and income, and sync it to your budget.</p>
-        <button id="icrNext" class="primary">Next</button>
+        <h2>Income-Driven Student Loans (ICR / IBR)</h2>
+        <p><strong>Household size:</strong> ${H}</p>
+        <div class="note small">
+          Uses a simple planning model: IBR = 15% of (AGI − 150% FPL); ICR = 20% of (AGI − 100% FPL).
+          (We skip the 12-year ICR amortization variant and interest subsidies to keep it clear.)
+        </div>
+    
+        <div class="row"></div>
+        <label>Enter your <strong>annual income (AGI)</strong>:
+          $<input type="number" id="idrIncome" min="0" step="1000" placeholder="e.g., 52000" value="${defaultAGI || ''}">
+        </label>
+    
+        <div class="row"></div>
+        <div class="segmented">
+          <button id="modeIBR" class="primary">IBR (lower rate)</button>
+          <button id="modeICR">ICR</button>
+        </div>
+    
+        <div class="row"></div>
+        <div id="idrKpis">
+          <div><strong>Yearly payment:</strong> <span id="idrYearly">$0</span></div>
+          <div class="small muted">≈ <span id="idrMonthly">$0</span> per month</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="idrSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="IDR payment curve"></svg>
+    
+        <div class="row"></div>
+        <div id="idrTableWrap"></div>
+    
+        <div class="row"></div>
+        <button id="idrNext" class="primary">Next</button>
       `;
       pushStep(() => startICRStep(userInfo, budget));
-      document.getElementById('icrNext').addEventListener('click',
-        () => goNextBenefit('icr', userInfo, budget), { once:true });
+    
+      const incomeEl = document.getElementById('idrIncome');
+      const svg = document.getElementById('idrSvg');
+      const yearlyEl = document.getElementById('idrYearly');
+      const monthlyEl = document.getElementById('idrMonthly');
+      const wrap = document.getElementById('idrTableWrap');
+      const btnIBR = document.getElementById('modeIBR');
+      const btnICR = document.getElementById('modeICR');
+    
+      // UI state
+      let plan = 'IBR'; // default to lower rate
+    
+      function calcYearly(agi){
+        return plan === 'IBR' ? payIBR(agi, H) : payICR(agi, H);
+      }
+    
+      // ----- Build curve & table (0 → 150k in $10k steps for table; ~5k steps for curve) -----
+      const A_MAX = 150000, steps = 30;
+      let curvePts = [], yMax = 0;
+    
+      function rebuildCurve(){
+        curvePts = [];
+        yMax = 0;
+        for (let i = 0; i <= steps; i++){
+          const annual = (A_MAX * i) / steps;
+          const y = calcYearly(annual);
+          curvePts.push({ annual, yearly: y });
+          if (y > yMax) yMax = y;
+        }
+        if (yMax < 1200) yMax = 1200;
+      }
+    
+      function renderTable(){
+        const rows = [];
+        for (let a = 0; a <= A_MAX; a += 10000){
+          const y = calcYearly(a);
+          rows.push({ annual: a, yearly: y, monthly: y/12 });
+        }
+        // store series for later use
+        budget._series = budget._series || {};
+        budget._series.icr = { plan, H, points: rows.slice() };
+    
+        let html = `<table style="width:100%; border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left; padding:6px;">Annual income</th>
+            <th style="text-align:left; padding:6px;">Yearly payment</th>
+            <th style="text-align:left; padding:6px;">Monthly (≈)</th>
+          </tr></thead><tbody>`;
+        for (const r of rows){
+          html += `<tr>
+            <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.yearly).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.monthly).toLocaleString()}</td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+        wrap.innerHTML = html;
+      }
+    
+      // ----- SVG curve -----
+      const W = 720, Hpx = 260, P = 40;
+      const innerW = W - P*2, innerH = Hpx - P*2;
+      function xPix(annual){ return P + (annual / A_MAX) * innerW; }
+      function yPix(yearly){ return Hpx - P - (yearly / yMax) * innerH; }
+    
+      function drawCurve(){
+        svg.innerHTML = '';
+    
+        const axX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axX.setAttribute('x1', P); axX.setAttribute('y1', Hpx-P);
+        axX.setAttribute('x2', W-P); axX.setAttribute('y2', Hpx-P);
+        axX.setAttribute('stroke','currentColor');
+    
+        const axY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axY.setAttribute('x1', P); axY.setAttribute('y1', P);
+        axY.setAttribute('x2', P); axY.setAttribute('y2', Hpx-P);
+        axY.setAttribute('stroke','currentColor');
+    
+        let d = '';
+        for (let i = 0; i < curvePts.length; i++){
+          const { annual, yearly } = curvePts[i];
+          const X = xPix(annual), Y = yPix(yearly);
+          d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        // marker
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','idrMarker');
+        marker.setAttribute('r','4');
+        marker.setAttribute('fill','currentColor');
+    
+        // labels
+        const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(yMax) - 6);
+        yLabel.setAttribute('font-size','10');
+        yLabel.textContent = '$' + Math.round(yMax).toLocaleString();
+    
+        const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLabel.setAttribute('x', xPix(A_MAX) - 44); xLabel.setAttribute('y', Hpx - P + 14);
+        xLabel.setAttribute('font-size','10');
+        xLabel.textContent = '$' + A_MAX.toLocaleString();
+    
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', Hpx - 6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.textContent = 'Annual income (AGI)';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', Hpx/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${Hpx/2})`);
+        yTitle.textContent = 'Yearly IDR payment';
+    
+        svg.append(axX, axY, path, marker, yLabel, xLabel, xTitle, yTitle);
+      }
+    
+      function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
+    
+      function updateFromInput(){
+        const agi = Number(incomeEl.value) || 0;
+        const y = calcYearly(agi);
+        yearlyEl.textContent = fmt(y);
+        monthlyEl.textContent = fmt(y/12);
+    
+        // move marker
+        const marker = document.getElementById('idrMarker');
+        const clamped = Math.max(0, Math.min(A_MAX, agi));
+        marker.setAttribute('cx', xPix(clamped));
+        marker.setAttribute('cy', yPix(calcYearly(clamped)));
+      }
+    
+      function refreshAll(){
+        rebuildCurve();
+        drawCurve();
+        renderTable();
+        updateFromInput();
+        // button styles
+        btnIBR.classList.toggle('primary', plan === 'IBR');
+        btnICR.classList.toggle('primary', plan === 'ICR');
+      }
+    
+      btnIBR.addEventListener('click', () => { plan = 'IBR'; refreshAll(); }, { once:false });
+      btnICR.addEventListener('click', () => { plan = 'ICR'; refreshAll(); }, { once:false });
+      incomeEl.addEventListener('input', updateFromInput);
+    
+      // first paint
+      refreshAll();
+    
+      // Save & continue
+      document.getElementById('idrNext').addEventListener('click', () => {
+        const agi = Number(incomeEl.value) || 0;
+        const yearly = calcYearly(agi);
+        const monthly = Math.round(yearly / 12);
+    
+        // Persist to budget (keeps your existing naming)
+        budget.usingICR = true;                // “using an IDR plan”
+        budget.idrPlan = plan;                 // 'IBR' | 'ICR'
+        budget.idrMonthlyPayment = monthly;    // for roll-up
+        // Optional series for the final roll-up (negative = cost)
+        if (!budget._series) budget._series = {};
+        budget._series.icr = budget._series.icr || { plan, H, points: [] };
+    
+        alert(`Saved ${plan}. Estimated payment ≈ ${fmt(yearly)} / year (${fmt(monthly)} / mo).`);
+        goNextBenefit('icr', userInfo, budget);
+      }, { once:true });
     }
+
     
     
-    // ========== Free & Reduced Meals (FRL) ==========
+    // ===== FRL (Free/Reduced Lunch/Breakfast) — Benefit Offset (PLUS) =====
     function startFRLStep(userInfo, budget){
-      if (!willing(userInfo, budget).frl) return goNextBenefit('frl', userInfo, budget);
       const app = document.getElementById('app');
+    
+      // --- Build list of kids age 4–19 from BOTH children[] and members[] (dedup) ---
+      const childLike = []
+        .concat(Array.isArray(userInfo.children) ? userInfo.children : [])
+        .concat(Array.isArray(userInfo.members)  ? userInfo.members  : []);
+      const kidsRaw = childLike
+        .filter(c => Number(c?.age) >= 4 && Number(c?.age) <= 19);
+    
+      // dedupe by (name|'' + age); fall back to generic names
+      const seen = new Set();
+      const kids = [];
+      for (let i = 0; i < kidsRaw.length; i++){
+        const nm = (kidsRaw[i].name || kidsRaw[i].first || kidsRaw[i].nickname || '').trim();
+        const key = (nm.toLowerCase() || `child${i+1}`) + '::' + Number(kidsRaw[i].age);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        kids.push({ id: kids.length, name: nm || `Child ${kids.length+1}`, age: Number(kidsRaw[i].age) });
+      }
+    
+      // defaults you can tweak / prefill from userInfo.settings
+      const DEFAULTS = {
+        daysPerMonth: 18,              // planning default: ~18 school days/month
+        paidLunchPrice: 3.50,
+        paidBreakfastPrice: 2.00,
+        breakfastOffered: true,
+        cepAllKidsEatFree: false
+      };
+    
+      // ---- UI (NO school-days input; we show the assumption in the note) ----
       app.innerHTML = `
-        <h2>Free & Reduced Lunch/Breakfast — placeholder</h2>
-        <p>We’ll screen for FRL eligibility using income and school status; savings may reduce your food budget.</p>
-        <button id="frlNext" class="primary">Next</button>
+        <h2>School Meals (FRL) — Monthly Offset</h2>
+        <p>This adds a <em>plus</em> to your budget for school meals covered by Free/Reduced or CEP.</p>
+    
+        <div class="grid">
+          <label>Local paid lunch price ($)
+            <input id="frlPaidLunch" type="number" step="0.01" min="0" value="${DEFAULTS.paidLunchPrice}">
+          </label>
+          <label>Local paid breakfast price ($)
+            <input id="frlPaidBfast" type="number" step="0.01" min="0" value="${DEFAULTS.paidBreakfastPrice}">
+          </label>
+        </div>
+    
+        <label><input id="frlBreakfastOffered" type="checkbox" ${DEFAULTS.breakfastOffered?'checked':''}>
+          Breakfast also offered</label><br>
+        <label><input id="frlCep" type="checkbox" ${DEFAULTS.cepAllKidsEatFree?'checked':''}>
+          School uses CEP (all students eat free)</label>
+    
+        <h3>Which children (age 4–19) are covered at their school?</h3>
+        <div id="frlKids"></div>
+    
+        <button id="frlCalc" class="primary">Calculate</button>
+        <div id="frlResult"></div>
+        <button id="frlNext" class="primary" style="display:none;">Next</button>
       `;
+    
+      // Render child rows
+      const kidsDiv = document.getElementById('frlKids');
+      if (kids.length === 0) {
+        kidsDiv.innerHTML = `<p>No children ages 4–19 found. (Tip: add them under household members.)</p>`;
+      } else {
+        kidsDiv.innerHTML = kids.map(k => `
+          <fieldset style="margin:.5rem 0;padding:.5rem;border:1px solid #ddd;">
+            <legend>${k.name} (age ${k.age})</legend>
+            <label><input type="checkbox" id="frlOffer_${k.id}" checked> FRL offered at this school</label>
+            <div>
+              Status:
+              <label><input type="radio" name="frlStat_${k.id}" value="free" checked> Free</label>
+              <label><input type="radio" name="frlStat_${k.id}" value="reduced"> Reduced</label>
+              <label><input type="radio" name="frlStat_${k.id}" value="paid"> Paid</label>
+            </div>
+          </fieldset>
+        `).join('');
+      }
+    
+      function n2(val){ return Math.max(0, Number((+val).toFixed(2))); }
+      function checked(id){ return !!document.getElementById(id).checked; }
+    
+      document.getElementById('frlCalc').addEventListener('click', () => {
+        // fixed planning assumption (kept out of the UI)
+        const days = DEFAULTS.daysPerMonth;
+    
+        const priceLunch = n2(document.getElementById('frlPaidLunch').value);
+        const priceBfast = n2(document.getElementById('frlPaidBfast').value);
+        const breakfast = checked('frlBreakfastOffered');
+        const cep = checked('frlCep');
+    
+        const perChild = [];
+        let monthlyOffset = 0;
+    
+        for (const k of kids){
+          const offered = document.getElementById(`frlOffer_${k.id}`)?.checked ?? false;
+          const stat = offered
+            ? (document.querySelector(`input[name="frlStat_${k.id}"]:checked`)?.value || 'free')
+            : 'paid';
+    
+          let savedPerDay = 0;
+          if (offered){
+            if (cep || stat === 'free' || stat === 'reduced'){
+              // In Ohio, reduced is no-cost at checkout; treat as free.
+              savedPerDay += priceLunch;
+              if (breakfast) savedPerDay += priceBfast;
+            }
+          }
+          const childMonthly = +(savedPerDay * days).toFixed(2);
+          monthlyOffset += childMonthly;
+          perChild.push({
+            name:k.name, age:k.age, offered, status: stat,
+            dailySaved: +savedPerDay.toFixed(2),
+            monthlySaved: childMonthly
+          });
+        }
+    
+        budget.benefits = budget.benefits || {};
+        budget.benefits.frl = {
+          days,
+          priceLunch,
+          priceBreakfast: priceBfast,
+          breakfastOffered: breakfast,
+          cepAllKidsEatFree: cep,
+          perChild,
+          monthlyOffset: +monthlyOffset.toFixed(2),
+          note: 'Reduced-price students in Ohio pay $0; modeling treats Reduced as Free when offered. Uses a planning default of ~18 school days/month; summer meals handled via separate programs (e.g., P-EBT/SUN Bucks).'
+        };
+    
+        // show result
+        const r = document.getElementById('frlResult');
+        const rows = perChild.map(p =>
+          `<tr><td>${p.name}</td><td>${p.status}</td><td>$${p.dailySaved.toFixed(2)}</td><td>$${p.monthlySaved.toFixed(2)}</td></tr>`
+        ).join('');
+        r.innerHTML = `
+          <h3>Estimated Monthly Offset</h3>
+          <table class="thin"><thead><tr><th>Child</th><th>Status</th><th>Saved/Day</th><th>Saved/Month</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4">No eligible children.</td></tr>'}</tbody>
+          <tfoot><tr><th colspan="3" style="text-align:right;">Total Offset:</th><th>$${monthlyOffset.toFixed(2)}</th></tr></tfoot>
+          </table>
+          <p><small>Assumes local paid prices: lunch $${priceLunch.toFixed(2)}${breakfast?`, breakfast $${priceBfast.toFixed(2)}`:''}; ~${DEFAULTS.daysPerMonth} school days/month.</small></p>
+        `;
+        document.getElementById('frlNext').style.display = 'inline-block';
+      }, { once:false });
+    
       pushStep(() => startFRLStep(userInfo, budget));
       document.getElementById('frlNext').addEventListener('click',
         () => goNextBenefit('frl', userInfo, budget), { once:true });
     }
+
     
     
     // ========== Housing Assistance (Section 8 / PRH) ==========
@@ -3254,21 +3975,1492 @@
     }
     
     
-    // ========== HEAP / PIPP Plus ==========
-    function startHEAPStep(userInfo, budget){
-      if (!willing(userInfo, budget).heap) return goNextBenefit('heap', userInfo, budget);
+    /***** ===================== PIPP (Ohio) — Benefits Wizard ===================== *****/
+    
+    // ---- Config: Ohio averages (2025-ish anchors) ----
+    const OH_ELEC_RATE = 0.163;   // $/kWh (Ohio residential avg) — keep simple
+    const OH_GAS_RATE  = 1.43;    // $/therm (Ohio residential avg)
+    
+    // PIPP rules (simple)
+    const PIPP_RATE_ELEC = 0.05;       // 5% of monthly income
+    const PIPP_RATE_GAS  = 0.05;       // 5% of monthly income
+    const PIPP_MIN_PER_UTILITY = 10;   // $10 minimum per active utility
+    const PIPP_ELIG_FPL_MULT = 1.75;   // 175% FPL ceiling
+    
+    // Bedrooms → typical square footage (proxy)
+    function sqftFromBedrooms(beds){
+      const b = Math.max(1, Math.min(6, Number(beds)||3));
+      const map = {1:900, 2:1200, 3:1800, 4:2400, 5:2800, 6:3200};
+      return map[b];
+    }
+    
+    // Age bucket → multiplier
+    function ageMult(bucket){
+      // bucket keys: 'pre1980','1980_1999','2000_2009','2010_2019','2020p'
+      return {
+        pre1980: 1.20,
+        '1980_1999': 1.10,
+        '2000_2009': 1.00,
+        '2010_2019': 0.95,
+        '2020p': 0.90
+      }[bucket] ?? 1.00;
+    }
+    
+    // Ohio baseline consumptions (monthly averages)
+    const BASE_KWH_MONTH = 856;  // kWh/mo
+    const BASE_THERM_MONTH = 61; // therms/mo
+    
+    // FPL quick table (annual). Replace yearly when you update others.
+    const FPL_BY_SIZE = [0, 15190, 20540, 25890, 31240, 36590, 41940, 47290, 52640];
+    function getFPL(size){
+      if (size < 1) size = 1;
+      if (size >= FPL_BY_SIZE.length){
+        const last = FPL_BY_SIZE[FPL_BY_SIZE.length-1];
+        const step = 5340; // rough increment per extra person
+        return last + (size - (FPL_BY_SIZE.length-1)) * step;
+      }
+      return FPL_BY_SIZE[size];
+    }
+    
+    // Bedrooms-based estimator (monthly)
+    function estimateElecGasMonthly({bedrooms, ageBucket, occupants, primaryHeat}){
+      const sqft = sqftFromBedrooms(bedrooms);
+      const sizeFactor = Math.pow(sqft / 1800, 0.8);
+      const aMult = ageMult(ageBucket);
+      const occElec = 1 + Math.max(0, (Number(occupants||1) - 2)) * 0.04; // +4%/extra person
+      const heatAdj = (primaryHeat === 'electric') ? 1.10 : 1.00;
+    
+      const kWh = Math.max(400, BASE_KWH_MONTH * sizeFactor * aMult * occElec * heatAdj);
+      const elecCost = kWh * OH_ELEC_RATE;
+    
+      let therms = 0, gasCost = 0;
+      if (primaryHeat === 'gas'){
+        const occAdd = Math.max(0, (Number(occupants||1) - 2)) * 1.5; // hot water/cooking bump
+        therms = Math.max(5, BASE_THERM_MONTH * sizeFactor * aMult + occAdd);
+        gasCost = therms * OH_GAS_RATE;
+      }
+    
+      return {
+        sqft, kWh: Math.round(kWh), therms: Math.round(therms),
+        elecMonthly: +elecCost.toFixed(2),
+        gasMonthly: +gasCost.toFixed(2),
+        totalMonthly: +(elecCost + gasCost).toFixed(2)
+      };
+    }
+    
+    // ===== UI step =====
+    function startPIPPStep(userInfo, budget){
+      // Respect the router's willingness flag
+      if (!willing(userInfo, budget).pipp) {
+        return goNextBenefit('pipp', userInfo, budget);
+      }
+    
       const app = document.getElementById('app');
+    
+      // Basics
+      const hhSize = Number(userInfo.familySize || userInfo.householdSize || 1);
+      const grossAnnual = Number.isFinite(userInfo.grossAnnualIncome) ? Number(userInfo.grossAnnualIncome)
+                          : (Number.isFinite(userInfo.grossMonthlyIncome) ? Number(userInfo.grossMonthlyIncome) * 12 : 0);
+      const fplEligible = grossAnnual <= (PIPP_ELIG_FPL_MULT * getFPL(hhSize));
+    
+      const defaults = {
+        bedrooms:  userInfo.housing?.bedrooms ?? 3,
+        ageBucket: userInfo.housing?.ageBucket ?? '2000_2009',
+        occupants: userInfo.occupants ?? hhSize,
+        primaryHeat: userInfo.utilities?.primaryHeat ?? 'gas' // 'gas' | 'electric'
+      };
+    
       app.innerHTML = `
-        <h2>HEAP / PIPP Plus — placeholder</h2>
-        <p>We’ll estimate seasonal credits or percentage-of-income payments for utilities; locale-specific details go in an info box.</p>
-        <button id="heapNext" class="primary">Next</button>
+        <h2>PIPP (Percentage of Income Payment Plan)</h2>
+        <p>If you’re income-eligible, your electric/gas payment is capped by income. Otherwise we’ll estimate typical costs using bedrooms, age of home, and occupants.</p>
+    
+        <div class="grid" style="margin-top:.75rem;">
+          <label>Bedrooms
+            <select id="pippBeds">
+              ${[1,2,3,4,5,6].map(n => `<option value="${n}" ${n===defaults.bedrooms?'selected':''}>${n}${n===6?'+':''}</option>`).join('')}
+            </select>
+          </label>
+          <label>Year built
+            <select id="pippAge">
+              <option value="pre1980">Before 1980</option>
+              <option value="1980_1999">1980–1999</option>
+              <option value="2000_2009">2000–2009</option>
+              <option value="2010_2019">2010–2019</option>
+              <option value="2020p">2020+</option>
+            </select>
+          </label>
+          <label>Occupants
+            <input id="pippOcc" type="number" min="1" value="${defaults.occupants}">
+          </label>
+          <label>Primary heat
+            <select id="pippHeat">
+              <option value="gas" ${defaults.primaryHeat==='gas'?'selected':''}>Gas</option>
+              <option value="electric" ${defaults.primaryHeat==='electric'?'selected':''}>Electric</option>
+            </select>
+          </label>
+        </div>
+    
+        <button id="pippCalc" class="primary">Calculate</button>
+    
+        <div class="row"></div>
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="pippTryIncome" min="0" step="1000" placeholder="e.g., 48000" value="${grossAnnual || ''}">
+        </label>
+    
+        <div class="row"></div>
+        <div id="pippKpis">
+          <div><strong>Yearly electric+gas payment:</strong> <span id="pippKpiYearly">$0</span></div>
+          <div class="small" id="pippMode">—</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="pippSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="PIPP cost curve"></svg>
+    
+        <div class="row"></div>
+        <div id="pippTableWrap"></div>
+    
+        <div id="pippOut" style="margin-top:.75rem;"></div>
+        <button id="pippNext" class="primary" style="display:none;">Next</button>
       `;
-      pushStep(() => startHEAPStep(userInfo, budget));
-      document.getElementById('heapNext').addEventListener('click',
-        () => goNextBenefit('heap', userInfo, budget), { once:true });
+    
+      // set default for age bucket after render
+      document.getElementById('pippAge').value = defaults.ageBucket;
+    
+      // ----- helpers already in your file -----
+      function computeMonthlyAt(annualIncome, params){
+        const fpl = getFPL(hhSize);
+        const eligible = annualIncome <= (PIPP_ELIG_FPL_MULT * fpl);
+        const est = estimateElecGasMonthly(params);
+        if (eligible){
+          const hasElec = true;
+          const hasGas = (params.primaryHeat === 'gas');
+          const monthlyMAGI = annualIncome / 12;
+          let cap = 0;
+          if (hasElec && hasGas) cap = Math.max(2 * PIPP_MIN_PER_UTILITY, monthlyMAGI * (PIPP_RATE_ELEC + PIPP_RATE_GAS));
+          else if (hasElec)      cap = Math.max(PIPP_MIN_PER_UTILITY, monthlyMAGI * PIPP_RATE_ELEC);
+          else if (hasGas)       cap = Math.max(PIPP_MIN_PER_UTILITY, monthlyMAGI * PIPP_RATE_GAS);
+          return { monthly: Math.ceil(cap), eligible: true, est };
+        }
+        return { monthly: est.totalMonthly, eligible: false, est };
+      }
+    
+      // ----- state & DOM refs -----
+      const A_MAX = 150000, CURVE_STEPS = 30; // ~5k increments for curve
+      const svg = document.getElementById('pippSvg');
+      const kpiYearly = document.getElementById('pippKpiYearly');
+      const modeEl = document.getElementById('pippMode');
+      const tableWrap = document.getElementById('pippTableWrap');
+      const tryIncomeEl = document.getElementById('pippTryIncome');
+    
+      const W = 720, Hpx = 260, P = 40;
+      const innerW = W - P*2, innerH = Hpx - P*2;
+    
+      function xPix(annual){ return P + (annual / A_MAX) * innerW; }
+      function yPix(yearly, yMax){ return Hpx - P - (yearly / yMax) * innerH; }
+      function fmt(n){ return '$' + (Math.max(0, Math.round(n))).toLocaleString(); }
+    
+      let lastParams = null;
+      let yMax = 0;
+    
+      function buildSeries(params){
+        // 0→150k every 10k (table) and finer curve points
+        const table = [];
+        const curve = [];
+        yMax = 0;
+    
+        for (let i = 0; i <= CURVE_STEPS; i++){
+          const a = (A_MAX * i) / CURVE_STEPS;
+          const r = computeMonthlyAt(a, params);
+          const y = (Number(r.monthly)||0) * 12;
+          curve.push({ annual:a, yearly:y, eligible:r.eligible });
+          if (y > yMax) yMax = y;
+        }
+        for (let a = 0; a <= A_MAX; a += 10000){
+          const r = computeMonthlyAt(a, params);
+          table.push({ annual:a, yearly:(Number(r.monthly)||0)*12, eligible:r.eligible });
+        }
+        if (yMax < 1200) yMax = 1200;
+    
+        // persist for your final roll-up
+        budget._series = budget._series || {};
+        budget._series.pipp = { points: table.slice(), curve: curve.slice() };
+    
+        return { table, curve };
+      }
+    
+      function drawCurve(curve){
+        svg.innerHTML = '';
+        // axes
+        const axX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axX.setAttribute('x1', P); axX.setAttribute('y1', Hpx-P);
+        axX.setAttribute('x2', W-P); axX.setAttribute('y2', Hpx-P);
+        axX.setAttribute('stroke','currentColor');
+    
+        const axY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axY.setAttribute('x1', P); axY.setAttribute('y1', P);
+        axY.setAttribute('x2', P); axY.setAttribute('y2', Hpx-P);
+        axY.setAttribute('stroke','currentColor');
+    
+        let d = '';
+        for (let i = 0; i < curve.length; i++){
+          const { annual, yearly } = curve[i];
+          const X = xPix(annual), Y = yPix(yearly, yMax);
+          d += (i === 0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        // marker
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','pippMarker');
+        marker.setAttribute('r','4');
+        marker.setAttribute('fill','currentColor');
+    
+        // labels
+        const yLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLabel.setAttribute('x', P + 4); yLabel.setAttribute('y', yPix(yMax, yMax) - 6);
+        yLabel.setAttribute('font-size','10');
+        yLabel.textContent = fmt(yMax);
+    
+        const xLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLabel.setAttribute('x', xPix(A_MAX) - 44); xLabel.setAttribute('y', Hpx - P + 14);
+        xLabel.setAttribute('font-size','10');
+        xLabel.textContent = '$' + A_MAX.toLocaleString();
+    
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', Hpx - 6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.textContent = 'Annual salary';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', Hpx/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${Hpx/2})`);
+        yTitle.textContent = 'Yearly electric + gas payment';
+    
+        svg.append(axX, axY, path, marker, yLabel, xLabel, xTitle, yTitle);
+      }
+    
+      function renderTable(table){
+        let html = `<table style="width:100%; border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left; padding:6px;">Annual income</th>
+            <th style="text-align:left; padding:6px;">Yearly payment</th>
+            <th style="text-align:left; padding:6px;">Mode</th>
+          </tr></thead><tbody>`;
+        for (const r of table){
+          html += `<tr>
+            <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.yearly).toLocaleString()}</td>
+            <td style="padding:6px;">${r.eligible ? 'PIPP cap' : 'Estimator'}</td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+        tableWrap.innerHTML = html;
+      }
+    
+      function updateKpiAndMarker(){
+        if (!lastParams) return;
+        const a = Math.max(0, Math.min(A_MAX, Number(tryIncomeEl.value) || 0));
+        const r = computeMonthlyAt(a, lastParams);
+        const yearly = (Number(r.monthly)||0) * 12;
+        kpiYearly.textContent = fmt(yearly);
+        modeEl.textContent = r.eligible ? 'Using PIPP income cap' : 'Using bedrooms-based estimator';
+    
+        const marker = document.getElementById('pippMarker');
+        if (marker){
+          marker.setAttribute('cx', xPix(a));
+          marker.setAttribute('cy', yPix(yearly, yMax));
+        }
+      }
+    
+      function calcAndRender(){
+        const params = {
+          bedrooms:   Number(document.getElementById('pippBeds').value),
+          ageBucket:  document.getElementById('pippAge').value,
+          occupants:  Number(document.getElementById('pippOcc').value || hhSize),
+          primaryHeat:document.getElementById('pippHeat').value
+        };
+        lastParams = params;
+    
+        // Calculate based on the user's current income first (for the summary)
+        const here = computeMonthlyAt(grossAnnual, params);
+        const monthly = here.monthly;
+        const eligibleNow = here.eligible;
+    
+        // Persist detail
+        budget.benefits = budget.benefits || {};
+        budget.benefits.pipp = {
+          willingToApply: true,
+          fplEligible: fplEligible,
+          eligible: eligibleNow,
+          bedrooms: params.bedrooms,
+          ageBucket: params.ageBucket,
+          occupants: params.occupants,
+          primaryHeat: params.primaryHeat,
+          ohioRates: { elecPerKWh: OH_ELEC_RATE, gasPerTherm: OH_GAS_RATE },
+          estimator: estimateElecGasMonthly(params),
+          monthlyPayment: +monthly,
+          ruleNote: eligibleNow
+            ? 'Eligible for PIPP: 5% per utility (10% if both) with $10 min/utility.'
+            : 'Over 175% FPL — using bedrooms-based Ohio estimator for typical monthly elec+gas.',
+          source: eligibleNow ? 'pipp-cap' : 'estimator'
+        };
+    
+        // Build series, curve & table (yearly)
+        const { table, curve } = buildSeries(params);
+        drawCurve(curve);
+        renderTable(table);
+        updateKpiAndMarker();
+    
+        // small textual summary
+        const out = document.getElementById('pippOut');
+        out.innerHTML = eligibleNow
+          ? `<p><strong>PIPP eligible at your current income.</strong> Capped electric+gas: <strong>$${Math.round(monthly)}/mo</strong>.</p>`
+          : `<p><strong>Not FPL-eligible for PIPP at your current income.</strong> Estimated electric+gas: <strong>$${Number(monthly).toFixed(2)}/mo</strong>.</p>`;
+    
+        document.getElementById('pippNext').style.display = 'inline-block';
+      }
+    
+      document.getElementById('pippCalc').addEventListener('click', calcAndRender, { once:false });
+      tryIncomeEl.addEventListener('input', updateKpiAndMarker);
+    
+      // allow back nav
+      pushStep(() => startPIPPStep(userInfo, budget));
+      document.getElementById('pippNext').addEventListener('click',
+        () => goNextBenefit('pipp', userInfo, budget),
+        { once:true }
+      );
     }
 
 
+
+
+//Final Analyses
+
+    // ========== Final Sweep: Money Available to Pay Your Budget ==========
+    function renderFinalAvailability(userInfo, budget) {
+      const app = document.getElementById('app');
+    
+    // Reference lines only (not used in the math)
+    const bareMonthly = Number(budget._bareBonesMonthly || budget.totalMonthlyExpenses || 0);
+    
+    // If you already store the FULL frugal monthly in budget.frugalFunMonthly, we use that.
+    // Otherwise we add any addon (frugalMonthlyAddon OR totalMonthlyFrugal) on top of bareMonthly.
+    const frugalMonthly = (budget.frugalFunMonthly != null)
+      ? Number(budget.frugalFunMonthly)
+      : bareMonthly + Number(budget.frugalMonthlyAddon ?? budget.totalMonthlyFrugal ?? 0);
+    
+    const bareAnnual   = Math.round(bareMonthly  * 12);
+    const frugalAnnual = Math.round(frugalMonthly * 12);
+
+    
+      app.innerHTML = `
+        <h2>Income Sweep — Money Available to Pay Your Budget</h2>
+    
+        <div class="note small" style="margin-bottom:10px;">
+          <strong>Bare-Bones Annual Budget:</strong> $${bareAnnual.toLocaleString()}
+          &nbsp; | &nbsp;
+          <strong>Frugal-but-Fun Annual Budget:</strong> $${frugalAnnual.toLocaleString()}
+        </div>
+    
+        <canvas id="final_chart" width="760" height="340" style="margin-top:6px;"></canvas>
+        <div id="final_table" style="margin-top:12px; overflow-x:auto;"></div>
+    
+        <div class="row"></div>
+        <button id="finalBack" class="secondary">Back</button>
+        <button id="finalNext" class="primary">Finish</button>
+      `;
+      pushStep(() => renderFinalAvailability(userInfo, budget));
+    
+      // ---------- Normalizer for all saved series ----------
+      function seriesValueAtIncome(key, income) {
+        const s = budget._series && budget._series[key];
+        if (!s || !Array.isArray(s.points)) return 0;
+    
+        const pt = s.points.find(p => p.income === income || p.annual === income);
+        if (!pt) return 0;
+    
+        // Common field names we’ve used across steps
+        if ('value'         in pt) return Number(pt.value)         || 0;
+        if ('yearly'        in pt) return Number(pt.yearly)        || 0; // IDR/Healthcare now store 'yearly'
+        if ('addAnnual'     in pt) return Number(pt.addAnnual)     || 0; // generic additions
+        if ('benefitAnnual' in pt) return Number(pt.benefitAnnual) || 0; // SNAP step (annualized)
+        if ('costAnnual'    in pt) return Number(pt.costAnnual)    || 0; // PIPP utilities (annual)
+        if ('outOfPocket'   in pt) return Number(pt.outOfPocket)   || 0; // Childcare (annual)
+        if ('annualDue'     in pt) return Number(pt.annualDue)     || 0; // EdChoice (annual)
+    
+        // FRL sometimes saves monthly offset → annualize
+        if (key === 'frl' && 'monthlyOffset' in pt) {
+          return (Number(pt.monthlyOffset) || 0) * 12;
+        }
+    
+        // Legacy healthcare series used monthly → annualize
+        if (key === 'healthcare' && 'monthly' in pt) {
+          return (Number(pt.monthly) || 0) * 12;
+        }
+    
+        return 0;
+      }
+    
+      // If FRL was calculated but no series exists, synthesize a flat series
+      (function ensureFrlSeries(){
+        const frl = budget.benefits && budget.benefits.frl;
+        if (!frl) return;
+        const has = budget._series && budget._series.frl;
+        if (has) return;
+        const monthly = Number(frl.monthlyOffset || 0);
+        const pts = [];
+        for (let a = 0; a <= 150000; a += 10000) {
+          pts.push({ annual: a, monthlyOffset: monthly });
+        }
+        budget._series = budget._series || {};
+        budget._series.frl = { points: pts };
+      })();
+    
+      // ---------- Build rows at each $10k ----------
+      const steps = [];
+      for (let g = 0; g <= 150000; g += 10000) steps.push(g);
+    
+      const rows = steps.map(gross => {
+        // Post-tax net (after standard deductions/withholdings)
+        const taxes = calcAnnualNet(gross, {
+          filingStatus: userInfo.filingStatus || 'hoh',
+          cityRate:     userInfo.cityRate ?? 0.02,
+          retirePct:    userInfo.retirePct ?? 0.05
+        });
+        const net = Math.round(taxes.netAnnual);
+    
+        // Additions
+        const addSNAP = Math.round(seriesValueAtIncome('snap', gross)); // annual benefit
+        const addFRL  = Math.round(seriesValueAtIncome('frl',  gross)); // annual offset
+    
+        // Subtractions
+        const subChildcare = Math.round(seriesValueAtIncome('childcare',  gross)); // annual OOP
+        const subEdChoice  = Math.round(seriesValueAtIncome('edchoice',   gross)); // annual due
+        const subIDR       = Math.round(seriesValueAtIncome('icr',        gross)); // yearly IDR/IBR
+        const subHealth    = Math.round(seriesValueAtIncome('healthcare', gross)); // yearly premium+OOP
+        const subUtils     = Math.round(seriesValueAtIncome('pipp',       gross)); // yearly elec+gas
+    
+        const available = net + addSNAP + addFRL
+                            - subChildcare - subEdChoice - subIDR - subHealth - subUtils;
+    
+        return {
+          gross, net,
+          addSNAP, addFRL,
+          subChildcare, subEdChoice, subIDR, subHealth, subUtils,
+          available
+        };
+      });
+    
+      // ---------- NEW: persist a series of the “remaining available” curve ----------
+      budget._series = budget._series || {};
+      budget._series.finalAvailable = {
+        points: rows.map(r => ({ annual: r.gross, available: r.available }))
+      };
+    
+      // ---------- Chart ----------
+      (function drawChart(){
+        const canvas = document.getElementById('final_chart');
+        const ctx = canvas.getContext('2d');
+    
+        const pad = {l:56, r:10, t:12, b:34};
+        const w = canvas.width - pad.l - pad.r;
+        const h = canvas.height - pad.t - pad.b;
+    
+        const maxX = 150000;
+        const minAvail = Math.min(...rows.map(r=>r.available), 0, bareAnnual, frugalAnnual);
+        const maxAvail = Math.max(...rows.map(r=>r.available), bareAnnual, frugalAnnual);
+        const yMin = Math.floor(minAvail / 5000) * 5000;
+        const yMax = Math.ceil(maxAvail / 5000) * 5000;
+    
+        const x2px = x => pad.l + (x/maxX)*w;
+        const y2py = y => pad.t + h - ((y - yMin)/(yMax - yMin || 1))*h;
+    
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.beginPath(); ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, pad.t+h); ctx.lineTo(pad.l+w, pad.t+h); ctx.stroke();
+    
+        // x ticks
+        for (let x=0; x<=maxX; x+=50000){
+          const px = x2px(x);
+          ctx.beginPath(); ctx.moveTo(px, pad.t+h); ctx.lineTo(px, pad.t+h+5); ctx.stroke();
+          ctx.fillText(`$${(x/1000).toFixed(0)}k`, px-14, pad.t+h+18);
+        }
+        // y ticks
+        const yStep = Math.max(5000, Math.ceil((yMax-yMin)/6/5000)*5000);
+        for (let y=yMin; y<=yMax; y+=yStep){
+          const py = y2py(y);
+          ctx.beginPath(); ctx.moveTo(pad.l-5, py); ctx.lineTo(pad.l, py); ctx.stroke();
+          ctx.fillText(`$${y.toLocaleString()}`, 8, py+3);
+        }
+    
+        // horizontal budget lines
+        ctx.setLineDash([6,6]); ctx.beginPath();
+        ctx.moveTo(pad.l, y2py(bareAnnual));   ctx.lineTo(pad.l+w, y2py(bareAnnual));   ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y2py(frugalAnnual)); ctx.lineTo(pad.l+w, y2py(frugalAnnual)); ctx.stroke();
+        ctx.setLineDash([]);
+    
+        // availability curve
+        ctx.beginPath();
+        rows.forEach((r,i)=>{
+          const px = x2px(r.gross);
+          const py = y2py(r.available);
+          if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+        });
+        ctx.stroke();
+    
+        // labels
+        ctx.fillText('Income', pad.l + w/2 - 18, pad.t + h + 28);
+        ctx.save(); ctx.translate(16, pad.t + h/2 + 20); ctx.rotate(-Math.PI/2);
+        // UPDATED LABEL:
+        ctx.fillText('Remaining income available to pay your budget ($/year)', 0, 0);
+        ctx.restore();
+      })();
+    
+      // ---------- Fixed-order table you requested ----------
+      let thead = `
+        <tr>
+          <th>Annual salary</th>
+          <th>Post-tax & deductions net</th>
+          <th>+ SNAP</th>
+          <th>+ FRL</th>
+          <th>− Childcare</th>
+          <th>− EdChoice</th>
+          <th>− IDR (ICR/IBR)</th>
+          <th>− Healthcare</th>
+          <th>− Utilities (PIPP)</th>
+          <th>Remaining available</th>
+        </tr>`;
+    
+      let tbody = '';
+      rows.forEach(r => {
+        tbody += `<tr>
+          <td>$${r.gross.toLocaleString()}</td>
+          <td>$${r.net.toLocaleString()}</td>
+          <td>$${r.addSNAP.toLocaleString()}</td>
+          <td>$${r.addFRL.toLocaleString()}</td>
+          <td>$${r.subChildcare.toLocaleString()}</td>
+          <td>$${r.subEdChoice.toLocaleString()}</td>
+          <td>$${r.subIDR.toLocaleString()}</td>
+          <td>$${r.subHealth.toLocaleString()}</td>
+          <td>$${r.subUtils.toLocaleString()}</td>
+          <td><strong>$${r.available.toLocaleString()}</strong></td>
+        </tr>`;
+      });
+    
+      document.getElementById('final_table').innerHTML =
+        `<table class="striped compact"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+    
+      // Nav
+      document.getElementById('finalBack').addEventListener('click', goBack);
+      document.getElementById('finalNext').addEventListener('click', () => {
+        alert('All set! You can go back to adjust assumptions or restart.');
+      }, { once:true });
+    }
+
+
+
+
+    // ========== Net Income After Taxes & Standard Deductions (Annual) ==========
+    function startNetAfterTaxStep(userInfo, budget) {
+      const app = document.getElementById('app');
+      const A_MAX = 150000;
+      const TABLE_STEP = 10000;
+    
+      const guessStatus = userInfo.filingStatus || 'hoh'; // default Head of Household feels right for many users here
+      const guessCity = Number.isFinite(userInfo.cityTaxRate) ? userInfo.cityTaxRate : 0.02;
+      const guessRetire = Number.isFinite(userInfo.retirePct) ? userInfo.retirePct : 0.05;
+    
+      app.innerHTML = `
+        <h2>Net Income after Taxes & Standard Paycheck Deductions</h2>
+        <p>This shows your estimated <strong>annual net pay</strong> after typical withholdings:</p>
+        <ul class="small">
+          <li>Federal income tax (using standard deduction & filing status)</li>
+          <li>Social Security (6.2%) and Medicare (1.45%)</li>
+          <li>Ohio state tax (simplified brackets)</li>
+          <li>Local/city tax (you can adjust the rate)</li>
+          <li>“Typical” mandatory retirement if salary ≥ $30,000 (default 5%, editable)</li>
+        </ul>
+    
+        <div class="grid" style="gap:8px; margin:8px 0 12px;">
+          <label>Filing status:
+            <select id="taxFiling">
+              <option value="single" ${guessStatus==='single'?'selected':''}>Single</option>
+              <option value="hoh" ${guessStatus==='hoh'?'selected':''}>Head of Household</option>
+              <option value="married" ${guessStatus==='married'?'selected':''}>Married Filing Jointly</option>
+            </select>
+          </label>
+          <label>City tax rate (%):
+            <input type="number" id="taxCityRate" min="0" max="3.5" step="0.1" value="${(guessCity*100).toFixed(1)}">
+          </label>
+          <label>Retirement withholding (% if ≥ $30k):
+            <input type="number" id="taxRetirePct" min="0" max="15" step="0.5" value="${(guessRetire*100).toFixed(1)}">
+          </label>
+        </div>
+    
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="taxAnnual" min="0" step="1000" placeholder="e.g., 52000">
+        </label>
+    
+        <div class="row"></div>
+        <div id="taxKpis">
+          <div><strong>Net annual pay:</strong> <span id="taxNet">$0</span></div>
+          <div class="small" id="taxBreakdown">—</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="taxSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="Net income curve"></svg>
+    
+        <div class="row"></div>
+        <div id="taxTableWrap"></div>
+    
+        <div class="row"></div>
+        <div class="note small">
+          This is a best-effort estimate for planning. Actual withholdings vary by employer payroll setup and W-4 specifics.
+        </div>
+    
+        <div class="row"></div>
+        <button id="taxNext" class="primary">Continue to Final Peril Zone</button>
+      `;
+      pushStep(() => startNetAfterTaxStep(userInfo, budget));
+    
+      // Save user choices back to userInfo for later steps
+      const filingEl = document.getElementById('taxFiling');
+      const cityEl = document.getElementById('taxCityRate');
+      const retireEl = document.getElementById('taxRetirePct');
+      const annualEl = document.getElementById('taxAnnual');
+      const netEl = document.getElementById('taxNet');
+      const bdEl = document.getElementById('taxBreakdown');
+      const svg = document.getElementById('taxSvg');
+      const wrap = document.getElementById('taxTableWrap');
+    
+      function fmt(n){ return '$' + Math.max(0, Math.round(n)).toLocaleString(); }
+      function pctStr(x){ return (x*100).toFixed(1) + '%'; }
+    
+      // Build curve (0..A_MAX) and table (every 10k)
+      function currentOpts(){
+        const filingStatus = filingEl.value || 'hoh';
+        const cityRate = Math.max(0, Math.min(0.035, (Number(cityEl.value)||0)/100));
+        const retirePct = Math.max(0, Math.min(0.15, (Number(retireEl.value)||0)/100));
+        return { filingStatus, cityRate, retirePct };
+      }
+    
+      let yMax = 100;
+      const steps = 30;
+      const curve = [];
+    
+      function rebuildCurveAndTable() {
+        curve.length = 0;
+        yMax = 100;
+    
+        const opts = currentOpts();
+    
+        for (let i=0;i<=steps;i++){
+          const annual = (A_MAX * i) / steps;
+          const r = calcAnnualNet(annual, opts);
+          curve.push({ x: annual, y: r.netAnnual });
+          if (r.netAnnual > yMax) yMax = r.netAnnual;
+        }
+        if (yMax < 100) yMax = 100;
+    
+        // Build table (every $10k) and stash series
+        const rows = [];
+        const series = [];
+    
+        for (let a = 0; a <= A_MAX; a += 10000) {
+          const r = calcAnnualNet(a, opts);
+          rows.push({
+            annual: a, net: r.netAnnual,
+            fed: r.components.fed, ss: r.components.ssTax, med: r.components.medicareTax,
+            state: r.components.state, local: r.components.local, retire: r.components.retirement
+          });
+          series.push({
+            annual: a,
+            netAnnual: r.netAnnual,
+            ...r.components
+          });
+        }
+    
+        // Save for roll-up usage
+        budget._series = budget._series || {};
+        budget._series.netIncome = {
+          points: series,
+          assumptions: { ...opts }
+        };
+    
+        renderTable(rows);
+        draw();
+      }
+    
+      // SVG draw
+      const W = 720, H = 260, P = 40;
+      const innerW = W - P*2, innerH = H - P*2;
+      const xPix = x => P + (x / A_MAX) * innerW;
+      const yPix = y => H - P - (y / yMax) * innerH;
+    
+      function draw(){
+        svg.innerHTML = '';
+    
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', H-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', H-P);
+        axisX.setAttribute('stroke','currentColor');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
+        axisY.setAttribute('stroke','currentColor');
+    
+        let d = '';
+        for (let i=0;i<curve.length;i++){
+          const X = xPix(curve[i].x), Y = yPix(curve[i].y);
+          d += (i===0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','taxMarker');
+        marker.setAttribute('r','4'); marker.setAttribute('fill','currentColor');
+    
+        // endpoint labels
+        const yLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLab.setAttribute('x', P+4); yLab.setAttribute('y', yPix(yMax)-6);
+        yLab.setAttribute('font-size','10'); yLab.setAttribute('fill','currentColor');
+        yLab.textContent = '$' + Math.round(yMax).toLocaleString();
+    
+        const xLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLab.setAttribute('x', xPix(A_MAX)-44); xLab.setAttribute('y', H-P+14);
+        xLab.setAttribute('font-size','10'); xLab.setAttribute('fill','currentColor');
+        xLab.textContent = '$' + A_MAX.toLocaleString();
+    
+        // Axis titles
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', H-6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.setAttribute('font-size','12'); xTitle.setAttribute('fill','currentColor');
+        xTitle.textContent = 'Annual salary (gross)';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', H/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('font-size','12'); yTitle.setAttribute('fill','currentColor');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${H/2})`);
+        yTitle.textContent = 'Net annual pay (after withholdings)';
+    
+        svg.append(axisX, axisY, path, marker, yLab, xLab, xTitle, yTitle);
+        moveMarker(Number(annualEl.value)||0);
+      }
+    
+      function moveMarker(annual){
+        const marker = document.getElementById('taxMarker');
+        const a = Math.max(0, Math.min(A_MAX, annual));
+        const r = calcAnnualNet(a, currentOpts());
+        marker.setAttribute('cx', xPix(a));
+        marker.setAttribute('cy', yPix(r.netAnnual));
+    
+        netEl.textContent = fmt(r.netAnnual);
+        bdEl.innerHTML = `
+          <span>Fed: ${fmt(r.components.fed)}</span> &nbsp;|&nbsp;
+          <span>SS: ${fmt(r.components.ssTax)}</span> &nbsp;|&nbsp;
+          <span>Medicare: ${fmt(r.components.medicareTax)}</span> &nbsp;|&nbsp;
+          <span>State: ${fmt(r.components.state)}</span> &nbsp;|&nbsp;
+          <span>City: ${fmt(r.components.local)}</span> &nbsp;|&nbsp;
+          <span>Retire: ${fmt(r.components.retirement)}</span>
+        `;
+      }
+    
+      function renderTable(rows){
+        let html = `<table style="width:100%; border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left; padding:6px;">Annual salary</th>
+            <th style="text-align:left; padding:6px;">Federal</th>
+            <th style="text-align:left; padding:6px;">Social Sec</th>
+            <th style="text-align:left; padding:6px;">Medicare</th>
+            <th style="text-align:left; padding:6px;">State</th>
+            <th style="text-align:left; padding:6px;">City</th>
+            <th style="text-align:left; padding:6px;">Retirement</th>
+            <th style="text-align:left; padding:6px;">Net annual</th>
+          </tr></thead><tbody>`;
+        for (const r of rows){
+          html += `<tr>
+            <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.fed).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.ss).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.med).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.state).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.local).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.retire).toLocaleString()}</td>
+            <td style="padding:6px;"><strong>$${Math.round(r.net).toLocaleString()}</strong></td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+        wrap.innerHTML = html;
+      }
+    
+      // initial build
+      rebuildCurveAndTable();
+      moveMarker(0);
+    
+      // live reactions
+      [filingEl, cityEl, retireEl].forEach(el => {
+        el.addEventListener('input', () => {
+          // persist to userInfo so later steps inherit
+          userInfo.filingStatus = filingEl.value;
+          userInfo.cityTaxRate = Math.max(0, Math.min(0.035, (Number(cityEl.value)||0)/100));
+          userInfo.retirePct = Math.max(0, Math.min(0.15, (Number(retireEl.value)||0)/100));
+          rebuildCurveAndTable();
+          moveMarker(Number(annualEl.value)||0);
+        });
+      });
+      annualEl.addEventListener('input', () => moveMarker(Number(annualEl.value)||0));
+    
+      document.getElementById('taxNext').addEventListener('click', () => {
+        // proceed to your existing final roll-up
+        startPerilZoneStep(userInfo, budget);
+      }, { once:true });
+    }
+
+
+    // ========== Peril Zone Calculation (Annual) ==========
+    // y-axis: Net Income Available for Bare Bones Budget Costs (annual)
+    // Overlays: Bare-Bones Budget Amount (annual) & Frugal-Fun Budget Amount (annual)
+    function startPerilZoneStep(userInfo, budget) {
+      const app = document.getElementById('app');
+      const A_MAX = 150000;
+      const TABLE_STEP = 10000;
+    
+      // 1) Pull NET series from earlier step
+      const netPts = budget._series?.netIncome?.points || [];
+      if (!netPts.length) {
+        alert("I need your Net Income series first. Running taxes step…");
+        return startNetAfterTaxStep(userInfo, budget);
+      }
+    
+      // 2) Get annual thresholds
+      //    Bare bones = what the user computed earlier.
+      //    Frugal-fun = your computed add-on; fallback if not set.
+      const bareBonesMonthly = Number(budget.totalMonthlyExpenses) || 0;
+      const frugalFunMonthly = Number(budget.frugalFunMonthly ?? (bareBonesMonthly + 200)); // TODO: replace with your finalized frugal-fun calc
+      const BARE_ANNUAL = bareBonesMonthly * 12;
+      const FUN_ANNUAL  = frugalFunMonthly  * 12;
+    
+    // ---- normalize all series to ANNUAL dollars at a given income ----
+    function seriesValueAtIncome(key, income) {
+      const s = budget._series && budget._series[key];
+      if (!s || !Array.isArray(s.points)) return 0;
+      const pt = s.points.find(p => p.income === income || p.annual === income);
+      if (!pt) return 0;
+    
+      if ('yearly'        in pt) return Number(pt.yearly)        || 0;
+      if ('benefitAnnual' in pt) return Number(pt.benefitAnnual) || 0;
+      if ('costAnnual'    in pt) return Number(pt.costAnnual)    || 0;
+      if ('outOfPocket'   in pt) return Number(pt.outOfPocket)   || 0;
+      if ('annualDue'     in pt) return Number(pt.annualDue)     || 0;
+      if ('value'         in pt) return Number(pt.value)         || 0;
+    
+      if (key === 'snap' && 'monthlyBenefit' in pt) return (Number(pt.monthlyBenefit)||0) * 12;
+      if (key === 'frl'  && 'monthlyOffset'  in pt) return (Number(pt.monthlyOffset) ||0) * 12;
+      if (key === 'healthcare' && 'monthly' in pt)  return (Number(pt.monthly)       ||0) * 12;
+      if (key === 'pipp' && ('monthly' in pt || 'monthlyCost' in pt))
+        return (Number(pt.monthly ?? pt.monthlyCost) || 0) * 12;
+    
+      return 0;
+    }
+    
+    // compute final remaining available at a given annual salary
+    function availableAt(annual){
+      // baseline net (from saved tax series if present, else recompute)
+      const fromSeries = budget._series?.netIncome?.points?.find(p=>p.annual===annual)?.netAnnual;
+      const net = Math.round(fromSeries != null ? fromSeries : calcAnnualNet(annual, {
+        filingStatus: userInfo.filingStatus || 'hoh',
+        cityRate:     userInfo.cityTaxRate ?? userInfo.cityRate ?? 0.02,
+        retirePct:    userInfo.retirePct ?? 0.05
+      }).netAnnual);
+    
+      const addSNAP       = Math.round(seriesValueAtIncome('snap',       annual));
+      const addFRL        = Math.round(seriesValueAtIncome('frl',        annual));
+      const subChildcare  = Math.round(seriesValueAtIncome('childcare',  annual));
+      const subEdChoice   = Math.round(seriesValueAtIncome('edchoice',   annual));
+      const subICR        = Math.round(seriesValueAtIncome('icr',        annual));
+      const subHealth     = Math.round(seriesValueAtIncome('healthcare', annual));
+      const subUtilities  = Math.round(seriesValueAtIncome('pipp',       annual));
+    
+      return net + addSNAP + addFRL
+               - subChildcare - subEdChoice - subICR - subHealth - subUtilities;
+    }
+
+      app.innerHTML = `
+        <h2>Peril Zone — Net Income Available vs Survival Thresholds</h2>
+        <p>The curve shows your <strong>net annual income after taxes & standard deductions</strong> by salary.
+           The horizontal lines show your <strong>Bare-Bones</strong> and <strong>Frugal-but-Fun</strong> annual budgets.</p>
+    
+        <div class="note small" style="margin:8px 0 12px;">
+          Y-axis: <em>Net Income Available for Bare Bones Budget Costs (annual)</em>
+        </div>
+    
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="pzIncome" min="0" step="1000" placeholder="e.g., 52000">
+        </label>
+    
+        <div class="row"></div>
+        <div id="pzKpis">
+          <div><strong>Net annual income:</strong> <span id="pzNet">$0</span></div>
+          <div class="small" id="pzBreak">—</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="pzSvg" viewBox="0 0 720 300" width="100%" height="300" aria-label="Peril Zone"></svg>
+    
+        <div class="row"></div>
+        <div id="pzTableWrap"></div>
+    
+        <div class="row"></div>
+        <button id="pzNext" class="primary">Continue</button>
+      `;
+      pushStep(() => startPerilZoneStep(userInfo, budget));
+    
+      const svg  = document.getElementById('pzSvg');
+      const inp  = document.getElementById('pzIncome');
+      const netEl= document.getElementById('pzNet');
+      const brEl = document.getElementById('pzBreak');
+      const wrap = document.getElementById('pzTableWrap');
+    
+      // --- helpers ---
+      function fmt(n){ return '$' + Math.max(0, Math.round(n)).toLocaleString(); }
+      function sampleNet(annual){
+        // linear interpolate from saved netIncome series
+        const pts = netPts.slice().sort((a,b)=>a.annual-b.annual);
+        if (annual <= pts[0].annual) return pts[0].netAnnual;
+        if (annual >= pts[pts.length-1].annual) return pts[pts.length-1].netAnnual;
+        for (let i=1;i<pts.length;i++){
+          const x0=pts[i-1].annual, y0=pts[i-1].netAnnual;
+          const x1=pts[i].annual,   y1=pts[i].netAnnual;
+          if (annual >= x0 && annual <= x1){
+            const t = (annual - x0) / (x1 - x0 || 1);
+            return y0 + t*(y1 - y0); 
+          }
+        }
+        return 0;
+      }
+    
+    // Build curve (0..A_MAX) from final remaining amounts
+    const steps = 30;
+    const curve = [];
+    let yMax = Math.max(BARE_ANNUAL, FUN_ANNUAL, 100);
+    
+    for (let i=0;i<=steps;i++){
+      const annual = (A_MAX * i) / steps;
+      const y = availableAt(annual);
+      curve.push({ x: annual, y });
+      if (y > yMax) yMax = y;
+    }
+
+    
+      // Table (every $10k): Gross | Net | Surplus/Deficit vs lines
+      const rows = [];
+      for (let a = 0; a <= A_MAX; a += TABLE_STEP) {
+        const row = netPts.find(p => p.annual === a) || { annual:a, netAnnual: sampleNet(a) };
+        const net = row.netAnnual || 0;
+        rows.push({
+          annual: a,
+          net,
+          vsBare: net - BARE_ANNUAL,
+          vsFun:  net - FUN_ANNUAL
+        });
+      }
+    
+      // --- draw SVG ---
+      const W = 720, H = 300, P = 40;
+      const innerW = W - P*2, innerH = H - P*2;
+      const xPix = x => P + (x / A_MAX) * innerW;
+      const yPix = y => H - P - (y / yMax) * innerH;
+    
+      function draw(){
+        svg.innerHTML = '';
+    
+        // axes
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', H-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', H-P);
+        axisX.setAttribute('stroke','currentColor');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
+        axisY.setAttribute('stroke','currentColor');
+    
+        // curve
+        let d = '';
+        for (let i=0;i<curve.length;i++){
+          const X = xPix(curve[i].x), Y = yPix(curve[i].y);
+          d += (i===0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        // marker
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','pzMarker');
+        marker.setAttribute('r','4'); marker.setAttribute('fill','currentColor');
+    
+        // horizontal lines: bare bones & frugal-fun
+        function hLine(val){
+          const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+          line.setAttribute('x1', P); line.setAttribute('x2', W-P);
+          line.setAttribute('y1', yPix(val)); line.setAttribute('y2', yPix(val));
+          line.setAttribute('stroke','currentColor');
+          line.setAttribute('stroke-dasharray','6 6');
+          line.setAttribute('opacity','0.7');
+          return line;
+        }
+        const lineBare = hLine(BARE_ANNUAL);
+        const lineFun  = hLine(FUN_ANNUAL);
+    
+        // labels for lines
+        function lineLabel(val, text, dy){
+          const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+          t.setAttribute('x', W - P - 6);
+          t.setAttribute('y', yPix(val) + (dy||-6));
+          t.setAttribute('text-anchor','end');
+          t.setAttribute('font-size','11');
+          t.setAttribute('fill','currentColor');
+          t.textContent = `${text}: ${fmt(val)}`;
+          return t;
+        }
+        const labBare = lineLabel(BARE_ANNUAL, 'Bare-Bones Budget');
+        const labFun  = lineLabel(FUN_ANNUAL,  'Frugal-Fun Budget', 12);
+    
+        // end labels
+        const yLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLab.setAttribute('x', P+4); yLab.setAttribute('y', yPix(yMax)-6);
+        yLab.setAttribute('font-size','10'); yLab.setAttribute('fill','currentColor');
+        yLab.textContent = '$' + Math.round(yMax).toLocaleString();
+    
+        const xLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLab.setAttribute('x', xPix(A_MAX)-44); xLab.setAttribute('y', H-P+14);
+        xLab.setAttribute('font-size','10'); xLab.setAttribute('fill','currentColor');
+        xLab.textContent = '$' + A_MAX.toLocaleString();
+    
+        // axis titles
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', H-6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.setAttribute('font-size','12'); xTitle.setAttribute('fill','currentColor');
+        xTitle.textContent = 'Annual salary (gross)';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', H/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('font-size','12'); yTitle.setAttribute('fill','currentColor');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${H/2})`);
+        yTitle.textContent = 'Remaining income available to pay your budget (annual)';
+    
+        svg.append(axisX, axisY, path, lineBare, lineFun, labBare, labFun, marker, yLab, xLab, xTitle, yTitle);
+      }
+    
+    function moveMarker(a){
+      const marker = document.getElementById('pzMarker');
+      const annual = Math.max(0, Math.min(A_MAX, a));
+      const avail = availableAt(annual);
+    
+      marker.setAttribute('cx', xPix(annual));
+      marker.setAttribute('cy', yPix(avail));
+      netEl.textContent = fmt(avail);
+    
+      const diffBare = avail - BARE_ANNUAL;
+      const diffFun  = avail - FUN_ANNUAL;
+      brEl.textContent =
+        `vs Bare-Bones: ${diffBare>=0?'+':''}${fmt(diffBare)} | vs Frugal-Fun: ${diffFun>=0?'+':''}${fmt(diffFun)}`;
+    }
+
+    
+    // ===== PATCH: replace the surplus/deficit table with the 10-column final table =====
+    function renderTable(_ignored){
+      // helper copied from renderFinalAvailability to read any saved series consistently
+      function seriesValueAtIncome(key, income) {
+        const s = budget._series && budget._series[key];
+        if (!s || !Array.isArray(s.points)) return 0;
+        const pt = s.points.find(p => p.income === income || p.annual === income);
+        if (!pt) return 0;
+    
+        if ('value'         in pt) return Number(pt.value)         || 0;
+        if ('yearly'        in pt) return Number(pt.yearly)        || 0; // IDR/Healthcare (yearly)
+        if ('addAnnual'     in pt) return Number(pt.addAnnual)     || 0;
+        if ('benefitAnnual' in pt) return Number(pt.benefitAnnual) || 0; // SNAP annualized
+        if ('costAnnual'    in pt) return Number(pt.costAnnual)    || 0; // PIPP annual
+        if ('outOfPocket'   in pt) return Number(pt.outOfPocket)   || 0; // Childcare annual OOP
+        if ('annualDue'     in pt) return Number(pt.annualDue)     || 0; // EdChoice annual
+    
+        // FRL monthly → annual
+        if (key === 'frl' && 'monthlyOffset' in pt) {
+          return (Number(pt.monthlyOffset) || 0) * 12;
+        }
+        // Legacy healthcare monthly → annual
+        if (key === 'healthcare' && 'monthly' in pt) {
+          return (Number(pt.monthly) || 0) * 12;
+        }
+        return 0;
+      }
+    
+      // Build rows at each $10k, using the same tax opts the step already has
+      const opts = {
+        filingStatus: (document.getElementById('taxFiling')?.value) || userInfo.filingStatus || 'hoh',
+        cityRate:     Number.isFinite(userInfo.cityTaxRate) ? userInfo.cityTaxRate : (userInfo.cityRate ?? 0.02),
+        retirePct:    Number.isFinite(userInfo.retirePct) ? userInfo.retirePct : 0.05
+      };
+    
+      const rows = [];
+      for (let annual = 0; annual <= A_MAX; annual += TABLE_STEP){
+        const t = calcAnnualNet(annual, opts);
+        const net = Math.round(t.netAnnual);
+    
+        const addSNAP       = Math.round(seriesValueAtIncome('snap',       annual));
+        const addFRL        = Math.round(seriesValueAtIncome('frl',        annual));
+        const subChildcare  = Math.round(seriesValueAtIncome('childcare',  annual));
+        const subEdChoice   = Math.round(seriesValueAtIncome('edchoice',   annual));
+        const subICR        = Math.round(seriesValueAtIncome('icr',        annual));
+        const subHealth     = Math.round(seriesValueAtIncome('healthcare', annual));
+        const subUtilities  = Math.round(seriesValueAtIncome('pipp',       annual));
+    
+        const available = net + addSNAP + addFRL
+                            - subChildcare - subEdChoice - subICR - subHealth - subUtilities;
+    
+        rows.push({
+          annual, net,
+          addSNAP, addFRL,
+          subChildcare, subEdChoice, subICR, subHealth, subUtilities,
+          available
+        });
+      }
+    
+      // Render with EXACT labels requested
+      let html = `<table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left; padding:6px;">Annual Salary</th>
+            <th style="text-align:left; padding:6px;">Post-Tax and Deduction Annual Salary</th>
+            <th style="text-align:left; padding:6px;">Add: SNAP</th>
+            <th style="text-align:left; padding:6px;">Add: FRL</th>
+            <th style="text-align:left; padding:6px;">Subtract: Childcare</th>
+            <th style="text-align:left; padding:6px;">Subtract: EdChoice</th>
+            <th style="text-align:left; padding:6px;">Subtract: ICR</th>
+            <th style="text-align:left; padding:6px;">Subtract: Healthcare</th>
+            <th style="text-align:left; padding:6px;">Subtract: Utilities</th>
+            <th style="text-align:left; padding:6px;">Remaining Income Available to Pay Budget</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+      for (const r of rows){
+        html += `<tr>
+          <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.net.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.addSNAP.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.addFRL.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.subChildcare.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.subEdChoice.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.subICR.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.subHealth.toLocaleString()}</td>
+          <td style="padding:6px;">$${r.subUtilities.toLocaleString()}</td>
+          <td style="padding:6px;"><strong>$${r.available.toLocaleString()}</strong></td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+      wrap.innerHTML = html;
+    }
+
+    
+      // draw & table
+      draw();
+      renderTable(rows);
+      moveMarker(0);
+    
+      // interactions
+      inp.addEventListener('input', () => moveMarker(Number(inp.value)||0));
+    
+      document.getElementById('pzNext').addEventListener('click', () => {
+        // If you still want to show the “All modeled components (HC/CC/Ed/SNAP)” roll-up after this,
+        // call it here. Otherwise you can finish here.
+        // startFinalNetImpactStep(userInfo, budget);
+        alert('Peril Zone view complete.');
+      }, { once:true });
+    }
+
+
+    // ========== Final Roll-up: Net Monthly Out-of-Pocket vs Annual Salary ==========
+    function startFinalNetImpactStep(userInfo, budget){
+      renderFinalAvailability(userInfo, budget);
+      const app = document.getElementById("app");
+      const A_MAX = 150000;
+      const TABLE_STEP = 10000;
+    
+      app.innerHTML = `
+        <h2>Net Monthly Impact — All Modeled Categories</h2>
+        <p>This combines Healthcare, Childcare, EdChoice, and SNAP into one curve.</p>
+    
+        <div class="note small" style="margin-bottom:8px;">
+          Toggle components:
+          <label style="margin-left:10px;"><input type="checkbox" id="inc-health" checked> Healthcare</label>
+          <label style="margin-left:10px;"><input type="checkbox" id="inc-cc" checked> Childcare</label>
+          <label style="margin-left:10px;"><input type="checkbox" id="inc-ed" checked> EdChoice</label>
+          <label style="margin-left:10px;"><input type="checkbox" id="inc-snap" checked> SNAP (subtracts)</label>
+          <label style="margin-left:10px; opacity:.5;"><input type="checkbox" id="inc-tax" disabled> Taxes (coming soon)</label>
+        </div>
+    
+        <label>Try an <strong>annual salary</strong>:
+          $<input type="number" id="finalIncome" min="0" step="1000" placeholder="e.g., 52000">
+        </label>
+    
+        <div class="row"></div>
+        <div id="finalKpis">
+          <div><strong>Net monthly (selected components):</strong> <span id="finalNet">$0</span></div>
+          <div class="small" id="finalNote">—</div>
+        </div>
+    
+        <div class="row"></div>
+        <svg id="finalSvg" viewBox="0 0 720 260" width="100%" height="260" aria-label="Net monthly impact curve"></svg>
+    
+        <div class="row"></div>
+        <div id="finalTableWrap"></div>
+    
+        <div class="row"></div>
+        <button id="finalDone" class="primary">Done</button>
+      `;
+      pushStep(() => startFinalNetImpactStep(userInfo, budget));
+    
+      const svg = document.getElementById('finalSvg');
+      const incomeEl = document.getElementById('finalIncome');
+      const netEl = document.getElementById('finalNet');
+      const noteEl = document.getElementById('finalNote');
+      const wrap = document.getElementById('finalTableWrap');
+    
+      const chk = {
+        hc:   document.getElementById('inc-health'),
+        cc:   document.getElementById('inc-cc'),
+        ed:   document.getElementById('inc-ed'),
+        snap: document.getElementById('inc-snap'),
+        tax:  document.getElementById('inc-tax') // disabled for now
+      };
+    
+      // ------- helpers to sample series at any annual income -------
+      function linearSample(points, xKey, yKey, x){
+        if (!Array.isArray(points) || points.length === 0) return 0;
+        const pts = points.slice().sort((a,b)=> (a[xKey]-b[xKey]));
+        if (x <= pts[0][xKey]) return Number(pts[0][yKey]) || 0;
+        if (x >= pts[pts.length-1][xKey]) return Number(pts[pts.length-1][yKey]) || 0;
+        for (let i=1;i<pts.length;i++){
+          const x0 = pts[i-1][xKey], y0 = Number(pts[i-1][yKey])||0;
+          const x1 = pts[i][xKey],   y1 = Number(pts[i][yKey])||0;
+          if (x >= x0 && x <= x1){
+            const t = (x - x0) / (x1 - x0 || 1);
+            return y0 + t*(y1 - y0);
+          }
+        }
+        return 0;
+      }
+    
+      function monthlyHealthcare(annual){
+        const s = budget._series?.healthcare?.points || [];
+        // healthcare series is already monthly
+        return linearSample(s, 'annual', 'monthly', annual);
+      }
+      function monthlyChildcare(annual){
+        const s = budget._series?.childcare?.points || [];
+        // childcare points use 'income' key and annual out-of-pocket in 'outOfPocket'
+        const annualOOP = linearSample(s, 'income', 'outOfPocket', annual);
+        return (annualOOP||0)/12;
+      }
+      function monthlyEdChoice(annual){
+        const s = budget._series?.edchoice?.points || [];
+        const annualDue = linearSample(s, 'annual', 'annualDue', annual);
+        return (annualDue||0)/12;
+      }
+      function monthlySNAP(annual){
+        const s = budget._series?.snap?.points || [];
+        // snap series stored monthly benefit (positive dollars of help)
+        return linearSample(s, 'annual', 'monthlyBenefit', annual);
+      }
+    
+      // (placeholder) Taxes — return 0 for now, wire later
+      function monthlyTaxesNet(annual){
+        // TODO: replace with FICA + federal + state – credits, etc.
+        return 0;
+      }
+    
+      function computeNet(annual){
+        const parts = {
+          hc:   chk.hc.checked   ? monthlyHealthcare(annual)  : 0,
+          cc:   chk.cc.checked   ? monthlyChildcare(annual)   : 0,
+          ed:   chk.ed.checked   ? monthlyEdChoice(annual)    : 0,
+          snap: chk.snap.checked ? monthlySNAP(annual)        : 0,
+          tax:  chk.tax.checked  ? monthlyTaxesNet(annual)     : 0
+        };
+        // Net OOP = costs - benefits; taxes currently zero
+        const net = Math.max(0, parts.hc + parts.cc + parts.ed + parts.tax - parts.snap);
+        return { net, parts };
+      }
+    
+      // ------- build curve + table -------
+      const steps = 30;
+      const curve = [];
+      let yMax = 100;
+    
+      for (let i=0;i<=steps;i++){
+        const annual = (A_MAX * i) / steps;
+        const { net } = computeNet(annual);
+        curve.push({ x: annual, y: net });
+        if (net > yMax) yMax = net;
+      }
+      if (yMax < 100) yMax = 100;
+    
+      const tableRows = [];
+      for (let annual=0; annual<=A_MAX; annual+=TABLE_STEP){
+        const { net, parts } = computeNet(annual);
+        tableRows.push({ annual, net, ...parts });
+      }
+    
+      // ------- draw SVG with axis titles -------
+      const W = 720, H = 260, P = 40;
+      const innerW = W - P*2, innerH = H - P*2;
+      const xPix = x => P + (x / A_MAX) * innerW;
+      const yPix = y => H - P - (y / yMax) * innerH;
+    
+      function draw(){
+        svg.innerHTML = '';
+    
+        const axisX = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisX.setAttribute('x1', P); axisX.setAttribute('y1', H-P);
+        axisX.setAttribute('x2', W-P); axisX.setAttribute('y2', H-P);
+        axisX.setAttribute('stroke','currentColor');
+    
+        const axisY = document.createElementNS('http://www.w3.org/2000/svg','line');
+        axisY.setAttribute('x1', P); axisY.setAttribute('y1', P);
+        axisY.setAttribute('x2', P); axisY.setAttribute('y2', H-P);
+        axisY.setAttribute('stroke','currentColor');
+    
+        let d = '';
+        for (let i=0;i<curve.length;i++){
+          const X = xPix(curve[i].x), Y = yPix(curve[i].y);
+          d += (i===0 ? `M ${X} ${Y}` : ` L ${X} ${Y}`);
+        }
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill','none');
+        path.setAttribute('stroke','currentColor');
+        path.setAttribute('stroke-width','2');
+    
+        const marker = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        marker.setAttribute('id','finalMarker');
+        marker.setAttribute('r','4'); marker.setAttribute('fill','currentColor');
+    
+        // axis endpoint labels
+        const yLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yLab.setAttribute('x', P+4); yLab.setAttribute('y', yPix(yMax)-6);
+        yLab.setAttribute('font-size','10'); yLab.setAttribute('fill','currentColor');
+        yLab.textContent = '$' + Math.round(yMax).toLocaleString();
+    
+        const xLab = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xLab.setAttribute('x', xPix(A_MAX)-44); xLab.setAttribute('y', H-P+14);
+        xLab.setAttribute('font-size','10'); xLab.setAttribute('fill','currentColor');
+        xLab.textContent = '$' + A_MAX.toLocaleString();
+    
+        // axis titles
+        const xTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        xTitle.setAttribute('x', W/2); xTitle.setAttribute('y', H-6);
+        xTitle.setAttribute('text-anchor','middle');
+        xTitle.setAttribute('font-size','12'); xTitle.setAttribute('fill','currentColor');
+        xTitle.textContent = 'Annual salary';
+    
+        const yTitle = document.createElementNS('http://www.w3.org/2000/svg','text');
+        yTitle.setAttribute('x', 16); yTitle.setAttribute('y', H/2);
+        yTitle.setAttribute('text-anchor','middle');
+        yTitle.setAttribute('font-size','12'); yTitle.setAttribute('fill','currentColor');
+        yTitle.setAttribute('transform', `rotate(-90 16 ${H/2})`);
+        yTitle.textContent = 'Net monthly out-of-pocket (modeled)';
+    
+        svg.append(axisX, axisY, path, marker, yLab, xLab, xTitle, yTitle);
+      }
+    
+      function fmt(n){ return '$' + Math.max(0, Math.round(n)).toLocaleString(); }
+    
+      function moveMarker(annual){
+        const marker = document.getElementById('finalMarker');
+        const a = Math.max(0, Math.min(A_MAX, annual));
+        const { net, parts } = computeNet(a);
+        marker.setAttribute('cx', xPix(a));
+        marker.setAttribute('cy', yPix(net));
+        netEl.textContent = fmt(net);
+        noteEl.textContent =
+          `Breakdown — HC: ${fmt(parts.hc)} | CC: ${fmt(parts.cc)} | Ed: ${fmt(parts.ed)} | SNAP: -${fmt(parts.snap)}${parts.tax?` | Tax: ${fmt(parts.tax)}`:''}`;
+      }
+    
+      function renderTable(rows){
+        let html = `<table style="width:100%; border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left; padding:6px;">Annual income</th>
+            <th style="text-align:left; padding:6px;">Healthcare (mo)</th>
+            <th style="text-align:left; padding:6px;">Childcare (mo)</th>
+            <th style="text-align:left; padding:6px;">EdChoice (mo)</th>
+            <th style="text-align:left; padding:6px;">SNAP benefit (mo)</th>
+            <th style="text-align:left; padding:6px;">Net monthly</th>
+          </tr></thead><tbody>`;
+        for (const r of rows){
+          html += `<tr>
+            <td style="padding:6px;">$${r.annual.toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.hc).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.cc).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.ed).toLocaleString()}</td>
+            <td style="padding:6px;">$${Math.round(r.snap).toLocaleString()}</td>
+            <td style="padding:6px;"><strong>$${Math.round(r.net).toLocaleString()}</strong></td>
+          </tr>`;
+        }
+        html += `</tbody></table>`;
+        wrap.innerHTML = html;
+      }
+    
+      draw();
+      moveMarker(0);
+      renderTable(tableRows);
+    
+      // live updates
+      incomeEl.addEventListener('input', () => moveMarker(Number(incomeEl.value)||0));
+      [chk.hc, chk.cc, chk.ed, chk.snap, chk.tax].forEach(c=>{
+        c.addEventListener('change', () => {
+          // rebuild curve and table with new toggles
+          for (let i=0;i<=steps;i++){
+            const annual = (A_MAX * i) / steps;
+            const { net } = computeNet(annual);
+            curve[i].y = net;
+          }
+          // rescan ymax
+          yMax = Math.max(100, ...curve.map(p=>p.y));
+          draw();
+          moveMarker(Number(incomeEl.value)||0);
+    
+          // rebuild table
+          for (let i=0, a=0; a<=A_MAX; a+=TABLE_STEP, i++){
+            const r = computeNet(a);
+            tableRows[i] = { annual:a, net:r.net, ...r.parts };
+          }
+          renderTable(tableRows);
+        });
+      });
+    
+      document.getElementById('finalDone').addEventListener('click', () => {
+        alert('Roll-up complete.');
+      }, { once:true });
+    }
 
 
 
